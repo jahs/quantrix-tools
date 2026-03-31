@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<plugin>
+  <extension point="com.subx.framework.Plugin">
+    <plugin class="net.jahs.quantrix.groovyloader.GroovyLoaderPlugin" />
+  </extension>
+
+  <extension point="com.subx.general.ui.actions">
+    <actionset name="Groovy Loader Actions">
+      <action
+          class="net.jahs.quantrix.groovyloader.GroovyLoaderPlugin$ManagePluginsAction"
+          id="net.jahs.quantrix.groovyloader.manage"
+          name="%ManagePlugins_name"
+          tooltip="%ManagePlugins_tooltip" />
+    </actionset>
+  </extension>
+
+  <extension point="com.subx.general.ui.menu">
+    <menu label="Plugins" location="quantrix-window/after Tools" name="PluginsMenu">
+      <menu-item
+          action-name="net.jahs.quantrix.groovyloader.manage"
+          location="last"
+          type="regular" />
+    </menu>
+  </extension>
+</plugin>

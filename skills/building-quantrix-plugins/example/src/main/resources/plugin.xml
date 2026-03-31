@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<plugin>
+  <extension point="com.subx.framework.Plugin">
+    <plugin class="com.example.quantrix.HelloPlugin" />
+  </extension>
+
+  <extension point="com.subx.general.ui.actions">
+    <actionset name="Hello Plugin Actions">
+      <action
+          class="com.example.quantrix.HelloPlugin$HelloAction"
+          id="com.example.quantrix.hello.action"
+          name="%HelloAction_name"
+          tooltip="%HelloAction_tooltip">
+      </action>
+    </actionset>
+  </extension>
+
+  <extension point="com.subx.general.ui.menu">
+    <menu
+        label="%HelloMenu_label"
+        location="quantrix-window/after Tools"
+        name="HelloPluginMenu">
+      <menu-item
+          action-name="com.example.quantrix.hello.action"
+          location="last"
+          type="regular">
+      </menu-item>
+    </menu>
+  </extension>
+</plugin>

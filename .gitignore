@@ -1,0 +1,8 @@
+.DS_Store
+*.model
+*.model~
+*.class
+*.jar
+__pycache__/
+build/
+dist/

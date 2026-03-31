@@ -1,0 +1,132 @@
+name: Build & Test
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+jobs:
+  server-plugin:
+    name: Server Plugin (build + test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history for git describe
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 11
+      - name: Build and test
+        working-directory: groovy-server-plugin
+        run: ./build.sh
+      - name: Upload plugin JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: quantrix-server
+          path: groovy-server-plugin/dist/quantrix-server-*.jar
+
+  loader-plugin:
+    name: Loader Plugin (build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 11
+      - name: Build (using stubs)
+        working-directory: groovy-loader-plugin
+        run: ./build.sh
+      - name: Upload JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: groovy-loader-plugin
+          path: groovy-loader-plugin/dist/groovy-loader-plugin-*.jar
+
+  skills:
+    name: Package skills
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Validate skill frontmatter
+        run: |
+          for skill_dir in skills/*/; do
+            [ -f "$skill_dir/SKILL.md" ] || continue
+            skill_name=$(basename "$skill_dir")
+            # Extract YAML frontmatter between --- fences and check required fields
+            frontmatter=$(awk '/^---$/{if(++n==2)exit}n==1' "$skill_dir/SKILL.md")
+            echo "$frontmatter" | grep -q "^name:" || { echo "FAIL: $skill_name missing name"; exit 1; }
+            echo "$frontmatter" | grep -q "^description:" || { echo "FAIL: $skill_name missing description"; exit 1; }
+            echo "OK: $skill_name"
+          done
+      - name: Compile-check Python scripts
+        run: |
+          found=0
+          for py in $(find skills -name '*.py' -not -path '*/__pycache__/*'); do
+            python -m py_compile "$py"
+            echo "OK: $py"
+            found=$((found + 1))
+          done
+          echo "Compiled $found Python script(s)"
+      - name: Package each skill as .skill file
+        run: |
+          mkdir -p dist
+          for skill_dir in skills/*/; do
+            [ -f "$skill_dir/SKILL.md" ] || continue
+            skill_name=$(basename "$skill_dir")
+            cd skills
+            zip -r "../dist/${skill_name}.skill" "$skill_name" \
+              -x '*/__pycache__/*' '*/.DS_Store' '*/evals/*'
+            cd ..
+            echo "Packaged: ${skill_name}.skill"
+          done
+          ls -lh dist/
+      - name: Upload skill packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: skills
+          path: dist/*.skill
+
+  release:
+    name: Release
+    needs: [server-plugin, loader-plugin, skills]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: quantrix-server
+          path: release/
+      - uses: actions/download-artifact@v4
+        with:
+          name: groovy-loader-plugin
+          path: release/
+      - uses: actions/download-artifact@v4
+        with:
+          name: skills
+          path: release/
+
+      - name: Copy install script
+        run: cp install.sh release/
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            release/groovy-loader-plugin-*.jar
+            release/quantrix-server-*.jar
+            release/*.skill
+            release/install.sh

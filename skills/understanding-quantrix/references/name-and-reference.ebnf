@@ -1,0 +1,267 @@
+(* ================================================================
+   Quantrix Name and Reference Grammar
+   ================================================================
+
+   The core grammar for naming and referencing cells, items, groups,
+   categories, and ranges in Quantrix. This is the shared foundation
+   used (with varying correctness) by:
+
+     - FormulaParser (JavaCC)     — as part of the formula language
+     - getRange()/getNodeRange()  — hand-written in AbstractProjection
+     - NodeNameList               — hand-written character iterator
+     - AutoSelectionParser        — regex-based (buggy)
+     - getSelection(String)       — in ModelImpl/HasProjection
+
+   Inferred from Quantrix Modeler 24.4.0 source and runtime behaviour.
+
+   Notation: ISO 14977 EBNF with (* comments *).
+   ================================================================ *)
+
+
+(* ── Top-level selection ─────────────────────────────────────────
+
+   As used by getSelection(String) in the scripting API.
+   The '::' separates the view/matrix name from the reference within it.
+
+   Resolution: the input string is scanned for the first unquoted '::'.
+   If found, everything before is the view name, everything after is
+   the range expression. If not found, the entire string is treated as
+   a comma-separated list of view names.
+
+   Source: ModelImpl.getSelection(), NameQuoter.unquotedIndexOf()
+*)
+
+selection        = view_name , '::' , [ range_expression ]
+                 | view_name , { ',' , view_name } ;
+                   (* First alternative: view :: range (including empty range).
+                      Second alternative: one or more view names.
+                      Disambiguation: presence of unquoted '::'.
+                   *)
+
+
+(* ── Range expression ────────────────────────────────────────────
+
+   The part after '::'. Dispatched by AbstractProjection.getRange()
+   and MatrixImpl.getSelection().
+
+   Resolution order:
+     1. MatrixImpl checks for 'formula::' prefix (case-insensitive)
+     2. Sub-view '::' triggers recursive getSelection() dispatch
+     3. getRange() checks for cell range pattern <row,col>
+     4. getRange() checks for '{' (descriptor expression)
+     5. getRange() checks if the string is a category name
+     6. Otherwise falls through to getNodeRange()
+
+   Source: MatrixImpl.getSelection(), AbstractProjection.getRange()
+*)
+
+range_expression = formula_selector
+                 | sub_view_selection
+                 | cell_range
+                 | descriptor_expression
+                 | node_range
+                 | modifier
+                 | category_name ;
+                   (* modifier alone (Matrix1::* or Matrix1::^) selects
+                      all cells or all headers in the view.
+                      category_name must be last — it matches any single
+                      name, so it's a fallback when nothing else matches.
+                      At runtime, getRange() checks if the name is actually
+                      a category; if not, it falls through to getNodeRange(). *)
+
+
+(* ── Formula selector ────────────────────────────────────────────
+
+   Selects formulas by index or range within a matrix.
+   Uses 'Formula::' as a special prefix (case-insensitive).
+
+   Examples:
+     Matrix1::Formula::1        — first formula
+     Matrix1::Formula::2-3      — second through third
+     Matrix1::Formula::          — all formulas
+
+   This does NOT collide with a category named 'Formula' because
+   category:item references use single colon (':'), never double ('::').
+
+   Source: MatrixImpl.getSelection() — startsWith("formula::") check.
+*)
+
+formula_selector = 'Formula' , '::' , [ formula_index_range ] ;
+
+formula_index_range = integer , [ '-' , integer ] ;
+
+
+(* ── Sub-view selection ──────────────────────────────────────────
+
+   For views with sub-views (e.g. charts have a chart grid and
+   a data table), the sub-view is specified with an additional '::'.
+
+   Examples:
+     'Matrix1 - Chart1'::Data::A1:B1   — range on the data table
+     'Matrix1 - Chart1'::Data::         — all nodes on the data table
+
+   Like 'Formula::', the 'Data::' prefix uses double colon and does
+   not collide with user-created category or item names (which use
+   single colon separation).
+
+   Source: ModelImpl.getSelection() — recursive view resolution.
+*)
+
+sub_view_selection = name_section , '::' , [ range_expression ] ;
+
+
+(* ── Node range ──────────────────────────────────────────────────
+
+   A coordinate or pair of coordinates defining a range, with an
+   optional modifier suffix.
+
+   Source: AbstractProjection.getNodeRange()
+*)
+
+node_range       = coordinate , [ '..' , coordinate ] , [ modifier ] ;
+
+modifier         = '*'          (* cells only — excludes headers *)
+                 | '^' ;        (* nodes/headers only — excludes cells *)
+
+
+(* ── Coordinates ─────────────────────────────────────────────────
+
+   A coordinate identifies a point in the matrix by naming one item
+   from each relevant category. Items from different categories are
+   separated by ':'. Items within a category hierarchy use '.' for
+   group paths.
+
+   Source: AbstractProjection.getNodeRange() for ':' splitting
+           via NameQuoter.unquotedIndexOf(),
+           NodeNameList.parse() for iteration within addRangeToSelection(),
+           NodeNameList.AbstractNodeNameIterator for character-level parsing.
+*)
+
+coordinate       = item_reference , { ':' , item_reference } ;
+
+item_reference   = name_section , { '.' , name_section } ;
+
+
+(* ── Names ───────────────────────────────────────────────────────
+
+   Names can be unquoted or single-quoted.
+
+   UNQUOTED names may contain spaces and letters but must not contain
+   any character from the quoted_characters set (see below). They
+   must not start with a digit or '$'. They must not match the
+   reserved keywords 'skip', 'using', or 'as' (case-insensitive).
+
+   QUOTED names are delimited by single quotes. Inside the quotes,
+   any character is allowed except a bare single quote and newline.
+   A literal single quote is represented by doubling: ''.
+
+   Source: NodeNameList.AbstractNodeNameIterator.NameSection(),
+           NodeNameList.AbstractNodeNameIterator.QuotedString(),
+           NodeNameList.AbstractNodeNameIterator.String(),
+           NameQuoter.dequote(), NameQuoter.quotedName(),
+           NameQuoter.needsQuotes(),
+           FormulaParser.NameSection2() — tokens QUOTED_NAME and PHRASE.
+*)
+
+name_section     = quoted_name | unquoted_name ;
+
+quoted_name      = "'" , { quoted_char } , "'" ;
+
+quoted_char      = "''"         (* escaped single quote → literal ' *)
+                 | ? any character except "'" and newline ? ;
+
+unquoted_name    = unquoted_start , { unquoted_cont } ;
+
+unquoted_start   = ? any character that is NOT:
+                     - a quoted_character
+                     - a digit (0-9)
+                     - '$'
+                     - whitespace
+                     - newline
+                   ? ;
+                   (* Names starting with a digit or '$' must be quoted.
+                      Examples: '2020', '$Revenue' *)
+
+unquoted_cont    = unquoted_start
+                 | ' '          (* spaces are allowed within unquoted names *)
+                 | digit ;      (* digits are allowed after the first character *)
+                   (* Note: leading/trailing whitespace is trimmed by callers
+                      before name resolution. Spaces are significant only
+                      within a name, e.g. "Balance Sheet", "Total Assets". *)
+
+
+(* ── Quoted characters ───────────────────────────────────────────
+
+   From NameQuoter.cQuotedCharacters:
+
+     ! " # & ( ) * + , - . / ; < = > @ [ ] ^ { | } : \
+
+   A name containing ANY of these characters must be single-quoted.
+   Quantrix's formula editor enforces this automatically.
+
+   Additionally, names matching the keywords 'skip', 'using', or 'as'
+   (case-insensitive) must be quoted to avoid ambiguity with formula
+   clause syntax.
+
+   Source: NameQuoter.needsQuotes(), NameQuoter.cQuotedCharacters,
+           NameQuoter.cQuotedPatternString
+*)
+
+quoted_character = '!' | '"' | '#' | '&' | '(' | ')' | '*' | '+'
+                 | ',' | '-' | '.' | '/' | ';' | '<' | '=' | '>'
+                 | '@' | '[' | ']' | '^' | '{' | '|' | '}' | ':'
+                 | '\' ;
+
+
+(* ── View/matrix and category names ──────────────────────────────
+
+   View names follow the same quoting rules as item names.
+   The '::' is found via NameQuoter.unquotedIndexOf() which
+   respects single-quoted regions — so a view name like
+   'Matrix::Formula' (containing ::) must be single-quoted.
+
+   Source: ModelImpl.getSelection(), NameQuoter.unquotedIndexOf()
+*)
+
+view_name        = name_section ;
+
+category_name    = name_section ;
+
+
+(* ── Cell coordinates ────────────────────────────────────────────
+
+   Numeric row/column references using angle brackets.
+   1-based indices. Whitespace around the integers is permitted.
+
+   Source: AbstractProjection.getRange(), cCellRangePattern:
+           <\s*(\d+)\s*,\s*(\d+)\s*>(\s*-\s*<\s*(\d+)\s*,\s*(\d+)\s*>)?
+*)
+
+cell_range       = cell_ref , [ '-' , cell_ref ] ;
+
+cell_ref         = '<' , integer , ',' , integer , '>' ;
+
+integer          = digit , { digit } ;
+
+digit            = '0' | '1' | '2' | '3' | '4' | '5'
+                 | '6' | '7' | '8' | '9' ;
+
+
+(* ── Descriptor expressions ──────────────────────────────────────
+
+   Item descriptors are named properties on items (e.g. formatting
+   attributes, "Units", etc.). The node reference before '{' identifies
+   the item(s), and the string inside '{' '}' names the descriptor.
+
+   The node reference may include '..' for a range of items.
+
+   Examples:
+     Matrix1::A{Descriptor}
+     Matrix1::A1..A3{Units}
+
+   Source: AbstractProjection.getRange() — the '{' branch.
+*)
+
+descriptor_expression = node_range , '{' , descriptor_name , '}' ;
+
+descriptor_name       = name_section ;

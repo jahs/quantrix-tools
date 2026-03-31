@@ -1,0 +1,792 @@
+<!--
+  Test cases for SelectionPreprocessor.
+
+  Format: each test block has a name, an input, and an optional expected
+  output. If expected is omitted, the output must equal the input
+  (no transformation).
+
+  This file deliberately uses simplified XML parsing (tag scanning, not a
+  full XML parser). The advantage is that the sensitive characters of
+  Groovy/Java (backslashes, quotes, dollar signs) are inert in XML, and
+  the sensitive characters of XML are inert in Groovy. This near-disjoint
+  overlap means test content needs no escaping — what you see between the
+  tags is the exact literal string under test.
+
+  The only content that would confuse the parser is a closing tag
+  appearing literally inside test data (effectively impossible for
+  Groovy source code). XML comments like this one are harmless — they
+  appear between test blocks and are skipped by the tag scanner.
+-->
+
+<test>
+<name>simple pipe</name>
+<input>|Balance Sheet::Cash:2020|.value</input>
+<expected>getSelection("Balance Sheet::Cash:2020").value</expected>
+</test>
+
+<test>
+<name>pipe with single-quoted name</name>
+<input>|Matrix::'Item Name':2020|</input>
+<expected>getSelection("Matrix::'Item Name':2020")</expected>
+</test>
+
+<test>
+<name>multiple pipes</name>
+<input>[|A::B|, |C::D|]</input>
+<expected>[getSelection("A::B"), getSelection("C::D")]</expected>
+</test>
+
+<test>
+<name>pipe in assignment</name>
+<input>def x = |A::B|</input>
+<expected>def x = getSelection("A::B")</expected>
+</test>
+
+<test>
+<name>pipe with method call</name>
+<input>|Revenue::Total|.formattedValue</input>
+<expected>getSelection("Revenue::Total").formattedValue</expected>
+</test>
+
+<!-- Command expressions: println |A::B| is ambiguous — after an identifier,
+     | is binary OR per GroovyLexer conventions (same as / being division
+     after an identifier, not regex). Use parentheses: println(|A::B|). -->
+
+<test>
+<name>command expression: pipe after identifier is binary OR</name>
+<input>println |A::B|</input>
+</test>
+
+<test>
+<name>command expression: use parens for pipe argument</name>
+<input>println(|A::B|)</input>
+<expected>println(getSelection("A::B"))</expected>
+</test>
+
+<test>
+<name>command expression: pipe with property after identifier is binary OR</name>
+<input>foo |A::B|.value</input>
+</test>
+
+<test>
+<name>command expression: use parens for pipe with property</name>
+<input>foo(|A::B|.value)</input>
+<expected>foo(getSelection("A::B").value)</expected>
+</test>
+
+<test>
+<name>pipe after opening paren</name>
+<input>println(|A::B|.value)</input>
+<expected>println(getSelection("A::B").value)</expected>
+</test>
+
+<test>
+<name>pipe after comma</name>
+<input>[|A::B|.value, |C::D|.value]</input>
+<expected>[getSelection("A::B").value, getSelection("C::D").value]</expected>
+</test>
+
+<test>
+<name>pipe after operator</name>
+<input>x + |A::B|.value</input>
+<expected>x + getSelection("A::B").value</expected>
+</test>
+
+<test>
+<name>pipe at start of line</name>
+<input>x = 1
+|A::B|.value</input>
+<expected>x = 1
+getSelection("A::B").value</expected>
+</test>
+
+<test>
+<name>binary OR</name>
+<input>x | y</input>
+</test>
+
+<test>
+<name>logical OR</name>
+<input>x || y</input>
+</test>
+
+<test>
+<name>bitwise OR assignment</name>
+<input>x |= 3</input>
+</test>
+
+<test>
+<name>chained binary OR</name>
+<input>a | b | c</input>
+</test>
+
+<test>
+<name>OR after closing paren</name>
+<input>(x) | y</input>
+</test>
+
+<test>
+<name>OR after closing bracket</name>
+<input>a[0] | b</input>
+</test>
+
+<test>
+<name>OR after closing brace</name>
+<input>{x} | y</input>
+</test>
+
+<test>
+<name>OR after number</name>
+<input>0xFF | mask</input>
+</test>
+
+<test>
+<name>OR after ++</name>
+<input>x++ | y</input>
+</test>
+
+<test>
+<name>OR after --</name>
+<input>x-- | y</input>
+</test>
+
+<test>
+<name>OR after this</name>
+<input>this | other</input>
+</test>
+
+<test>
+<name>OR after true</name>
+<input>true | false</input>
+</test>
+
+<test>
+<name>keyword as member: obj.class is expression-ending</name>
+<input>obj.class | mask | extra</input>
+</test>
+
+<test>
+<name>keyword as member: obj.in is expression-ending</name>
+<input>obj.in | mask</input>
+</test>
+
+<test>
+<name>keyword as member: safe navigation obj?.class</name>
+<input>obj?.class | mask</input>
+</test>
+
+<test>
+<name>keyword as member: spread obj*.class</name>
+<input>list*.class | mask</input>
+</test>
+
+<test>
+<name>keyword as member: whitespace before keyword</name>
+<input>obj.  class | mask</input>
+</test>
+
+<test>
+<name>keyword as member: block comment between dot and keyword</name>
+<input>obj./*x*/class | mask | extra</input>
+</test>
+
+<test>
+<name>keyword as member: newline between dot and keyword</name>
+<input>obj.
+class | mask</input>
+</test>
+
+<test>
+<name>keyword as member: line comment then keyword on next line</name>
+<input>obj.// get the class
+class | mask</input>
+</test>
+
+<test>
+<name>keyword as member: chained dot-keyword-dot</name>
+<input>obj.class.name | mask</input>
+</test>
+
+<test>
+<name>dot then pipe (AFTER_DOT allows pipe opener)</name>
+<input>obj.|Matrix::A|</input>
+<expected>obj.getSelection("Matrix::A")</expected>
+</test>
+
+<test>
+<name>float literal dot does not set AFTER_DOT</name>
+<input>1.0 | mask</input>
+</test>
+
+<test>
+<name>keyword not after dot: return still opens pipe</name>
+<input>return |A::B|</input>
+<expected>return getSelection("A::B")</expected>
+</test>
+
+<test>
+<name>keyword not after dot: assert opens pipe</name>
+<input>assert |A::B|.value > 0</input>
+<expected>assert getSelection("A::B").value > 0</expected>
+</test>
+
+<test>
+<name>elvis operator with pipe</name>
+<input>x ?: |A::B|.value</input>
+<expected>x ?: getSelection("A::B").value</expected>
+</test>
+
+<test>
+<name>two pipes in one expression</name>
+<input>x = |A::B| + |C::D|</input>
+<expected>x = getSelection("A::B") + getSelection("C::D")</expected>
+</test>
+
+<test>
+<name>leading whitespace after pipe rejected</name>
+<input>x = | A::B|</input>
+</test>
+
+<test>
+<name>leading tab after pipe rejected</name>
+<input>|	A::B|</input>
+</test>
+
+<test>
+<name>whitespace-only pipe rejected</name>
+<input>|   |</input>
+</test>
+
+<test>
+<name>pipe inside single-quoted string</name>
+<input>def s = 'a |pipe| b'</input>
+</test>
+
+<test>
+<name>pipe inside double-quoted string</name>
+<input>def s = "a |pipe| b"</input>
+</test>
+
+<test>
+<name>pipe inside triple-single-quoted string</name>
+<input>def s = '''a |pipe| b'''</input>
+</test>
+
+<test>
+<name>pipe inside triple-double-quoted string</name>
+<input>def s = """a |pipe| b"""</input>
+</test>
+
+<test>
+<name>string with escaped quote then pipe</name>
+<input>def s = 'it\'s |not a pipe|'</input>
+</test>
+
+<test>
+<name>pipe inside GString interpolation</name>
+<input>"value: ${|A::B|.value}"</input>
+<expected>"value: ${getSelection("A::B").value}"</expected>
+</test>
+
+<test>
+<name>nested GString interpolation</name>
+<input>"${"inner ${|A::B|}"}  outer"</input>
+<expected>"${"inner ${getSelection("A::B")}"}  outer"</expected>
+</test>
+
+<test>
+<name>interpolation newline leaks outer paren depth</name>
+<input>foo("${x
+|A::B|}")</input>
+<expected>foo("${x
+getSelection("A::B")}")</expected>
+</test>
+
+<test>
+<name>pipe after newline inside interpolation closure</name>
+<input>foo("${{ ->
+x
+|A::B|
+}()}")</input>
+<expected>foo("${{ ->
+x
+getSelection("A::B")
+}()}")</expected>
+</test>
+
+<test>
+<name>pipe inside slashy string</name>
+<input>def re = /a|b|c/
+|A::B|</input>
+<expected>def re = /a|b|c/
+getSelection("A::B")</expected>
+</test>
+
+<test>
+<name>slashy string with escaped slash</name>
+<input>def re = /a\/b|c/
+x</input>
+</test>
+
+<test>
+<name>division not confused with slashy</name>
+<input>x / y | z</input>
+</test>
+
+<test>
+<name>slashy after operator</name>
+<input>x =~ /pattern|alt/</input>
+</test>
+
+<test>
+<name>slashy GString interpolation with pipe</name>
+<input>def re = /prefix${|A::B|.value}suffix/</input>
+<expected>def re = /prefix${getSelection("A::B").value}suffix/</expected>
+</test>
+
+<test>
+<name>multiline slashy string with pipe-like text on later line</name>
+<input>def re = /a
+x + |A::B|/</input>
+</test>
+
+<test>
+<name>multiline slashy string preserves later-line content before real pipe</name>
+<input>def re = /a
+x + |A::B|/
+|C::D|</input>
+<expected>def re = /a
+x + |A::B|/
+getSelection("C::D")</expected>
+</test>
+
+<test>
+<name>tilde-slashy (common regex pattern)</name>
+<input>def m = str =~ ~/a|b/</input>
+</test>
+
+<test>
+<name>pipe inside dollar-slashy string</name>
+<input>def re = $/a|b|c/$
+|A::B|</input>
+<expected>def re = $/a|b|c/$
+getSelection("A::B")</expected>
+</test>
+
+<test>
+<name>dollar-slashy with escape</name>
+<input>def re = $/a$$/b|c/$
+x</input>
+</test>
+
+<test>
+<name>dollar-slashy GString interpolation with pipe</name>
+<input>def re = $/prefix${|A::B|.value}suffix/$</input>
+<expected>def re = $/prefix${getSelection("A::B").value}suffix/$</expected>
+</test>
+
+<test>
+<name>dollar-slashy after identifier (command expression)</name>
+<input>println $/a|b|c/$</input>
+</test>
+
+<test>
+<name>dollar-slashy with escape after identifier</name>
+<input>println $/a$/|B::C|/$</input>
+</test>
+
+<test>
+<name>dollar-slashy after number</name>
+<input>1 $/a|b/$</input>
+</test>
+
+<test>
+<name>dollar-slashy after closing paren</name>
+<input>(x) $/a|b/$</input>
+</test>
+
+<test>
+<name>dollar-slashy after closing paren no space</name>
+<input>(x)$/a|b/$</input>
+</test>
+
+
+<test>
+<name>pipe inside line comment</name>
+<input>x = 1 // |not a pipe|</input>
+</test>
+
+<test>
+<name>pipe inside block comment</name>
+<input>x = 1 /* |not a pipe| */ + 2</input>
+</test>
+
+<test>
+<name>inline block comment with newline is hidden (binary OR preserved)</name>
+<input>x /* comment
+*/ | y</input>
+</test>
+
+<test>
+<name>block comment at end of line resets context</name>
+<input>x /* comment */
+|A::B|</input>
+<expected>x /* comment */
+getSelection("A::B")</expected>
+</test>
+
+<test>
+<name>multiline block comment inside parens does not reset context</name>
+<input>(a /* comment
+*/ | b)</input>
+</test>
+
+<test>
+<name>pipe after line comment</name>
+<input>// comment
+|A::B|</input>
+<expected>// comment
+getSelection("A::B")</expected>
+</test>
+
+<test>
+<name>empty input</name>
+<input></input>
+</test>
+
+<test>
+<name>unclosed pipe at EOL</name>
+<input>|unclosed
+next line</input>
+</test>
+
+<test>
+<name>unclosed pipe at EOF</name>
+<input>|unclosed</input>
+</test>
+
+<test>
+<name>empty pipe is logical OR</name>
+<input>||</input>
+</test>
+
+<test>
+<name>return with pipe</name>
+<input>return |A::B|.value</input>
+<expected>return getSelection("A::B").value</expected>
+</test>
+
+<test>
+<name>negated pipe</name>
+<input>!|A::B|.isEmpty()</input>
+<expected>!getSelection("A::B").isEmpty()</expected>
+</test>
+
+<test>
+<name>pipe in ternary</name>
+<input>x ? |A::B| : |C::D|</input>
+<expected>x ? getSelection("A::B") : getSelection("C::D")</expected>
+</test>
+
+<test>
+<name>pipe after equals</name>
+<input>if (x == |A::B|.value) {}</input>
+<expected>if (x == getSelection("A::B").value) {}</expected>
+</test>
+
+<test>
+<name>pipe after semicolon</name>
+<input>x = 1; |A::B|</input>
+<expected>x = 1; getSelection("A::B")</expected>
+</test>
+
+<test>
+<name>pipe and binary OR in same expression</name>
+<input>|A::B|.value | flags</input>
+<expected>getSelection("A::B").value | flags</expected>
+</test>
+
+<test>
+<name>pipe, string with pipe, comment with pipe</name>
+<input>|A::B| + 'not |a| pipe' // also not |a| pipe</input>
+<expected>getSelection("A::B") + 'not |a| pipe' // also not |a| pipe</expected>
+</test>
+
+<test>
+<name>REGEX BUG: pipe in string literal matched</name>
+<input>def s = "a|b|c"
+result</input>
+</test>
+
+<test>
+<name>REGEX BUG: pipe in line comment matched</name>
+<input>// set |flags| here
+x</input>
+</test>
+
+<test>
+<name>REGEX BUG: pipe in block comment matched</name>
+<input>x /* |y| */ + z</input>
+</test>
+
+<test>
+<name>REGEX BUG: GString interpolation with pipe</name>
+<input>"total: ${|Revenue::Total|.value}"</input>
+<expected>"total: ${getSelection("Revenue::Total").value}"</expected>
+</test>
+
+<test>
+<name>REGEX BUG: closure with OR operator</name>
+<input>list.findAll { it | mask }</input>
+</test>
+
+<test>
+<name>single-quoted string containing pipe in script</name>
+<input>def pattern = '|'
+|A::B|</input>
+<expected>def pattern = '|'
+getSelection("A::B")</expected>
+</test>
+
+<test>
+<name>binary OR after newline inside parens</name>
+<input>(a
+| b)</input>
+</test>
+
+<test>
+<name>binary OR after newline inside brackets</name>
+<input>[a,
+b | c]</input>
+</test>
+
+<test>
+<name>pipe after newline outside parens</name>
+<input>x = 1
+|A::B|</input>
+<expected>x = 1
+getSelection("A::B")</expected>
+</test>
+
+<test>
+<name>nested parens with newline and OR</name>
+<input>((a
+| b)
+| c)</input>
+</test>
+
+<test>
+<name>pipe after closing paren on new line</name>
+<input>(x)
+|A::B|</input>
+<expected>(x)
+getSelection("A::B")</expected>
+</test>
+
+<test>
+<name>line continuation preserves context</name>
+<input>a \
+| b</input>
+</test>
+
+<test>
+<name>line continuation with matched pipe text preserves binary OR</name>
+<input>a \
+| b | c</input>
+</test>
+
+<test>
+<name>line continuation with matched pipe text after assignment preserves binary OR</name>
+<input>flags = mask \
+| option | extra</input>
+</test>
+
+<!-- ── Real-world pipe expressions from Quantrix tutorial models ── -->
+
+<test>
+<name>corpus: view only (no ::)</name>
+<input>|Matrix1|.categories.each { println it }</input>
+<expected>getSelection("Matrix1").categories.each { println it }</expected>
+</test>
+
+<test>
+<name>corpus: empty range selects all</name>
+<input>|Matrix1::|.backgroundColor = "none"</input>
+<expected>getSelection("Matrix1::").backgroundColor = "none"</expected>
+</test>
+
+<test>
+<name>corpus: standalone * modifier selects all cells</name>
+<input>|Matrix1::*|.backgroundColor = "none"</input>
+<expected>getSelection("Matrix1::*").backgroundColor = "none"</expected>
+</test>
+
+<test>
+<name>corpus: standalone ^ modifier selects all headers</name>
+<input>|Matrix1::^|.backgroundColor = "#FFFF99"</input>
+<expected>getSelection("Matrix1::^").backgroundColor = "#FFFF99"</expected>
+</test>
+
+<test>
+<name>corpus: headers only modifier ^</name>
+<input>|Sales Projections::Year^|.backgroundColor = "#FFFF99"</input>
+<expected>getSelection("Sales Projections::Year^").backgroundColor = "#FFFF99"</expected>
+</test>
+
+<test>
+<name>corpus: cells only modifier *</name>
+<input>|Matrix1::A1*|.value</input>
+<expected>getSelection("Matrix1::A1*").value</expected>
+</test>
+
+<test>
+<name>corpus: range with coordinates</name>
+<input>|Matrix1::A1:B1..A2:B2|.value</input>
+<expected>getSelection("Matrix1::A1:B1..A2:B2").value</expected>
+</test>
+
+<test>
+<name>corpus: cell coordinate syntax</name>
+<input>x = |Matrix1::<1, 1>-<2, 2>|</input>
+<expected>x = getSelection("Matrix1::<1, 1>-<2, 2>")</expected>
+</test>
+
+<test>
+<name>corpus: quoted view name with chart</name>
+<input>|'Matrix1 - Chart1'::A1:B1|.value</input>
+<expected>getSelection("'Matrix1 - Chart1'::A1:B1").value</expected>
+</test>
+
+<test>
+<name>corpus: sub-view Data:: on chart</name>
+<input>|'Matrix1 - Chart1'::Data::A1:B1|.value</input>
+<expected>getSelection("'Matrix1 - Chart1'::Data::A1:B1").value</expected>
+</test>
+
+<test>
+<name>corpus: formula selector</name>
+<input>|Matrix1::Formula::1|.text</input>
+<expected>getSelection("Matrix1::Formula::1").text</expected>
+</test>
+
+<test>
+<name>corpus: formula range selector</name>
+<input>|Matrix1::Formula::2-3|</input>
+<expected>getSelection("Matrix1::Formula::2-3")</expected>
+</test>
+
+<test>
+<name>corpus: all formulas</name>
+<input>|Matrix1::Formula::|.backgroundColor = "none"</input>
+<expected>getSelection("Matrix1::Formula::").backgroundColor = "none"</expected>
+</test>
+
+<test>
+<name>corpus: descriptor syntax</name>
+<input>|Matrix1::A{Descriptor}|.value</input>
+<expected>getSelection("Matrix1::A{Descriptor}").value</expected>
+</test>
+
+<test>
+<name>corpus: set value via pipe</name>
+<input>|Stage::Number|.value = 0</input>
+<expected>getSelection("Stage::Number").value = 0</expected>
+</test>
+
+<test>
+<name>corpus: category children</name>
+<input>|Project Assumptions::Scenario|.children.create()</input>
+<expected>getSelection("Project Assumptions::Scenario").children.create()</expected>
+</test>
+
+<test>
+<name>corpus: sub-view empty range</name>
+<input>|'Matrix1 - Chart1'::Data::|.backgroundColor = "none"</input>
+<expected>getSelection("'Matrix1 - Chart1'::Data::").backgroundColor = "none"</expected>
+</test>
+
+<test>
+<name>corpus: method call on view</name>
+<input>|'Matrix1 - Chart1'|.bringToFront()</input>
+<expected>getSelection("'Matrix1 - Chart1'").bringToFront()</expected>
+</test>
+
+<test>
+<name>corpus: set currency format</name>
+<input>|Sales Projections::|.setToCurrencyNumberFormat()</input>
+<expected>getSelection("Sales Projections::").setToCurrencyNumberFormat()</expected>
+</test>
+
+<test>
+<name>corpus: values assignment</name>
+<input>|Entry::Details:Entry|.values = ''</input>
+<expected>getSelection("Entry::Details:Entry").values = ''</expected>
+</test>
+
+<!-- ── Quantrix single-quote convention edge cases ─────────────── -->
+
+<test>
+<name>quoting: :: inside quoted view name</name>
+<input>|'Matrix::Formula'::1|</input>
+<expected>getSelection("'Matrix::Formula'::1")</expected>
+</test>
+
+<test>
+<name>quoting: double-quote in name escaped for Groovy string</name>
+<input>|'Matrix"Test'::A|</input>
+<expected>getSelection("'Matrix\"Test'::A")</expected>
+</test>
+
+<test>
+<name>quoting: dollar in name escaped for Groovy string</name>
+<input>|'Price$'::A|</input>
+<expected>getSelection("'Price\$'::A")</expected>
+</test>
+
+<test>
+<name>quoting: backslash in quoted name escaped for Groovy string</name>
+<input>|'Back\slash'::A|</input>
+<expected>getSelection("'Back\\slash'::A")</expected>
+</test>
+
+<test>
+<name>quoting: formula vs cell - double colon</name>
+<input>|Matrix::Formula::1|</input>
+<expected>getSelection("Matrix::Formula::1")</expected>
+</test>
+
+<test>
+<name>quoting: formula vs cell - single colon</name>
+<input>|Matrix::Formula:1|</input>
+<expected>getSelection("Matrix::Formula:1")</expected>
+</test>
+
+<test>
+<name>quoting: doubled single quote (Quantrix convention)</name>
+<input>|Matrix::'Shareholder''s Equity'|</input>
+<expected>getSelection("Matrix::'Shareholder''s Equity'")</expected>
+</test>
+
+<test>
+<name>quoting: pipe inside single-quoted name</name>
+<input>|Matrix::'Name|Here'|</input>
+<expected>getSelection("Matrix::'Name|Here'")</expected>
+</test>
+
+<test>
+<name>quoting: special chars in quoted name</name>
+<input>|Matrix::'Total (2020+)'|</input>
+<expected>getSelection("Matrix::'Total (2020+)'")</expected>
+</test>
+
+<test>
+<name>quoting: doubled single quote in view name</name>
+<input>|'Matt''s Model'::A|</input>
+<expected>getSelection("'Matt''s Model'::A")</expected>
+</test>
+
+<test>
+<name>quoting: multiple quoted items with special chars</name>
+<input>|Matrix::'A+B':'Year (1)'|</input>
+<expected>getSelection("Matrix::'A+B':'Year (1)'")</expected>
+</test>

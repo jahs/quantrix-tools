@@ -1,0 +1,372 @@
+(* ================================================================
+   Quantrix Formula Language Grammar
+   ================================================================
+
+   The complete grammar for the Quantrix formula language, as
+   implemented by FormulaParser (JavaCC-generated). This is a
+   superset of the name-and-reference grammar — it adds expressions,
+   recurrence references, function calls, and formula structure.
+
+   Inferred from Quantrix Modeler 24.4.0 source and runtime behaviour.
+
+   Notation: ISO 14977 EBNF with (* comments *).
+
+   Productions marked [ref] are shared with name-and-reference.ebnf.
+   Productions marked [formula-only] exist only in the formula language.
+   ================================================================ *)
+
+
+(* ── Formula structure ───────────────────────────────────────────
+   [formula-only]
+
+   A formula has an optional 'in' clause, a left-hand side (range),
+   an '=' separator, a right-hand side (expression), and optional
+   'using' and 'skip' clauses.
+
+   Source: FormulaParser.Formula()
+*)
+
+formula          = [ in_clause , argument_separator ] ,
+                   lhs , '=' , rhs ,
+                   [ using_clause ] ,
+                   [ skip_clause ] ;
+
+lhs              = formula_range ;
+
+rhs              = expression ;
+
+
+(* ── In clause ───────────────────────────────────────────────────
+   [formula-only]
+
+   Restricts the formula to a subset of the matrix.
+
+   Source: FormulaParser.InClause()
+*)
+
+in_clause        = 'in' , formula_range ;
+                   (* Restricts the formula to specific items. Examples:
+                        In Forecasted, Gross Profit = ...
+                        In Units, Quarter[THIS] = ...
+                        In Operating Expenses, Quarter[THIS] = ...
+                        In Period, Year[THIS] = ...
+                        In Start Year, Depreciation = ...
+                        In Year0, Initial investment = ...
+                        In 'Balance Sheet (without Dividends)', ...
+                   *)
+
+
+(* ── Using clause ────────────────────────────────────────────────
+   [formula-only]
+
+   Provides item aliasing and iteration control.
+
+   Source: FormulaParser.UsingClause(), Using()
+*)
+
+using_clause     = 'using' , using_item , { argument_separator , using_item } ;
+
+using_item       = formula_range , 'as' , [ table_name , '::' ] , simple_name ;
+
+
+(* ── Skip clause ─────────────────────────────────────────────────
+   [formula-only]
+
+   Excludes specific items from the formula's scope.
+
+   Source: FormulaParser.SkipClause()
+*)
+
+skip_clause      = 'skip' , formula_range , { argument_separator , formula_range } ;
+                   (* Excludes items from the formula's scope. Examples:
+                        skip Variance
+                        skip YTD
+                        skip Start Year
+                        skip YTD, Total, All Regions
+                        skip Revenue,Sum of Cost of Sales,...,'Depreciation & Amort.' .. Net Income
+                        skip Sum of Assets
+                        skip Depreciation:Year 2:Asset Cat 1 .. Depreciation:Year 4:Asset Cat 1,...
+                        skip Series .. Option Pool,Sum of Investors
+                   *)
+
+
+(* ── Formula range (LHS) ────────────────────────────────────────
+
+   The left-hand side of a formula, or a range reference within an
+   expression. This is the connection point to the name-and-reference
+   grammar, extended with recurrence.
+
+   Source: FormulaParser.NonNullRangeInTable(), RangeInTable()
+*)
+
+formula_range    = [ leading_colon ] ,
+                   node_coordinate , [ '..' , [ leading_colon ] , node_coordinate ] ;
+
+leading_colon    = ':' ;        (* optional leading colon before coordinate *)
+
+
+(* ── Node coordinates ────────────────────────────────────────────
+
+   A coordinate with optional recurrence brackets on each item.
+
+   Source: FormulaParser.NodeCoordinate(), NodeReference()
+*)
+
+node_coordinate  = node_reference , { ':' , node_reference } ;
+
+node_reference   = name , [ recurrence ] ;
+
+name             = name_section , { '.' , name_section } ;
+                   (* [ref] — same as name-and-reference.ebnf *)
+
+
+(* ── Recurrence ──────────────────────────────────────────────────
+   [formula-only]
+
+   Recurrence references allow formulas to refer to items relative
+   to the current evaluation position. Only valid within formula
+   context — not in pipe selections or getSelection(String).
+
+   Source: FormulaParser.RecurrenceOffset(), RecurrenceKeyword()
+*)
+
+recurrence       = '[' , [ '~' ] , recurrence_body , ']' ;
+                   (* '~' prefix = soft reference.
+                      Soft references return blank instead of error when
+                      the target is out of range. Examples:
+                        Year[~PREV]     — previous year, blank if none
+                        Month[~PREV]    — previous month, blank if none
+                   *)
+
+recurrence_body  = recurrence_keyword , [ offset ]
+                 | offset ;
+
+recurrence_keyword = 'first' | 'last' | 'this' | 'next' | 'prev' ;
+                   (* Examples from real formulas:
+                        Year[THIS], Year[PREV], Year[NEXT]
+                        Year[FIRST], Year[LAST]
+                        Year[LAST-1], Year[THIS-2], Year[THIS-4]
+                        Year[~PREV]
+                   *)
+
+offset           = offset_sign , offset_value ;
+
+offset_sign      = '+' | '-' ;
+
+offset_value     = integer ;
+
+
+(* ── Expressions ─────────────────────────────────────────────────
+   [formula-only]
+
+   The right-hand side expression language. Standard precedence
+   from lowest to highest:
+
+     or → and → comparison → concat → sum → term → exp → unary → element
+
+   Source: FormulaParser.Expression() through Element()
+*)
+
+expression       = or_expr ;
+
+or_expr          = and_expr , { '#or#' , and_expr } ;
+
+and_expr         = comparison , { '#and#' , comparison } ;
+
+comparison       = concat , [ comparator , concat ] ;
+
+comparator       = '<' | '>' | '<=' | '>=' | '<>' | '==' | '=' ;
+
+concat           = sum , { '&' , sum } ;
+
+sum              = term , { ( '+' | '-' ) , term } ;
+
+term             = exp , { ( '*' | '/' ) , exp } ;
+
+exp              = negation_or_unary , { '^' , negation_or_unary } ;
+
+negation_or_unary = negation
+                  | unary ;
+
+negation         = '-' , floating_point_literal   (* negative float literal *)
+                 | '-' , integer_literal           (* negative integer literal *)
+                 | [ '-' ] , element ;             (* unary minus on expression *)
+
+unary            = [ '#not#' ] , element ;
+
+
+(* ── Elements ────────────────────────────────────────────────────
+   [formula-only]
+
+   The atomic building blocks of expressions.
+
+   Source: FormulaParser.Element()
+*)
+
+element          = function_call
+                 | literal
+                 | direct_name_term
+                 | dimension_info_term
+                 | dimension_index_term
+                 | formula_range          (* range reference in expression *)
+                 | link_term
+                 | '(' , expression , ')'
+                 | environment_variable ;
+
+
+(* ── Function calls ──────────────────────────────────────────────
+   [formula-only]
+
+   Source: FormulaParser.FunctionCall()
+*)
+
+function_call    = function_name , '(' , [ argument_list ] , ')' ;
+
+function_name    = name ;
+
+argument_list    = expression , { argument_separator , expression } ;
+
+argument_separator = ',' | ';' ;
+                   (* Locale-dependent. In locales where ',' is the decimal
+                      separator (e.g. most European locales), ';' is used
+                      as the argument separator instead. The FormulaParser
+                      token ARGUMENT_SEPARATOR (66) adapts to the locale. *)
+
+
+(* ── Literals ────────────────────────────────────────────────────
+   [formula-only]
+
+   Source: FormulaParser.LiteralTerm(), FormulaParserConstants
+*)
+
+literal          = integer_literal
+                 | floating_point_literal
+                 | percentage_literal
+                 | string_literal
+                 | boolean_literal ;
+
+integer_literal  = decimal_literal | hex_literal ;
+
+decimal_literal  = digit , { digit } ;
+
+hex_literal      = '0' , ( 'x' | 'X' ) , hex_digit , { hex_digit } ;
+
+floating_point_literal = digit , { digit } , '.' , { digit } , [ exponent ]
+                       | digit , { digit } , exponent ;
+
+exponent         = ( 'e' | 'E' ) , [ '+' | '-' ] , digit , { digit } ;
+
+string_literal   = '"' , { ? any character except '"' ? } , '"' ;
+
+boolean_literal  = '#true#' | '#false#' ;
+
+percentage_literal = ( integer_literal | floating_point_literal ) , '%' ;
+                   (* e.g. 101%, 5% — syntactic sugar for /100 *)
+
+
+(* ── Special references ──────────────────────────────────────────
+   [formula-only]
+
+   Source: FormulaParser.DirectNameTerm(), DimensionInfoTerm(),
+           DimensionIndexTerm(), LinkTerm(), EnvironmentVariableTerm()
+*)
+
+direct_name_term = '@@' , [ table_name , '::' ] , simple_name ;
+                   (* direct cell name reference *)
+
+dimension_info_term = '@' , [ table_name , '::' ] , name ;
+                   (* item/dimension metadata — returns the item name.
+                      Used standalone as @Category, or within functions:
+                        @item(Category)
+                        @level(Category, level)
+                        @level(Category, from, to)
+                        @level(Category, *)
+                        @descriptor(Category, DescriptorName)
+                        @id(Category)
+                        @itemcount(Range)
+                      Also used with value(): value(@Category) returns
+                      the current item's value as a number.
+                   *)
+
+dimension_index_term = '#' , name , [ ':' , name ] ;
+                   (* item index within category — returns the 1-based
+                      position. Examples:
+                        #Year         — index within Year category
+                        #Year:Month   — compound index (outer:inner)
+                        #B            — index within B category
+                      Used in arithmetic: #Year - 1, #Year + 3
+                   *)
+
+link_term        = path , moniker ;
+                   (* cross-model link *)
+
+environment_variable = '$' , name ;
+                   (* system/environment variable *)
+
+table_name       = name_section ;
+
+
+(* ── Shared name productions ─────────────────────────────────────
+   [ref] — identical to name-and-reference.ebnf
+*)
+
+name_section     = quoted_name | unquoted_name ;
+
+quoted_name      = "'" , { quoted_char } , "'" ;
+
+quoted_char      = "''"
+                 | ? any character except "'" and newline ? ;
+
+unquoted_name    = unquoted_start , { unquoted_cont } ;
+
+unquoted_start   = ? any character that is NOT:
+                     - a quoted_character (see name-and-reference.ebnf)
+                     - a digit (0-9)
+                     - '$'
+                     - whitespace
+                     - newline
+                   ? ;
+
+unquoted_cont    = unquoted_start
+                 | ' '          (* spaces allowed within names *)
+                 | digit ;      (* digits allowed after first character *)
+                   (* In formula context, all quoted_characters are also
+                      operators or separators, so they terminate the lexer's
+                      PHRASE token naturally. The grammar and NameQuoter
+                      enforcement are consistent here.
+
+                      Names matching keywords 'skip', 'using', or 'as'
+                      (case-insensitive) must be quoted to avoid ambiguity
+                      with formula clause syntax. *)
+
+simple_name      = name_section ;
+
+integer          = digit , { digit } ;
+
+digit            = '0' | '1' | '2' | '3' | '4' | '5'
+                 | '6' | '7' | '8' | '9' ;
+
+hex_digit        = digit | 'a' | 'b' | 'c' | 'd' | 'e' | 'f'
+                         | 'A' | 'B' | 'C' | 'D' | 'E' | 'F' ;
+
+path             = ? PATH token — file/URL path in angle brackets ? ;
+
+moniker          = ? MONIKER token — model/matrix identifier ? ;
+
+
+(* ── Comments ────────────────────────────────────────────────────
+
+   Formulas support single-line (//) and block comments.
+
+   Source: FormulaParserConstants tokens START_SINGLE_LINE(48),
+           END_SINGLE_LINE(49), FORMAL_COMMENT(50),
+           MULTI_LINE_COMMENT(51).
+
+   Examples from real models:
+     Result:days360 false = days360(...) //default U.S. method
+     Result:days360  true = days360(...) //European method
+     // Not very interesting
+*)
+
+comment          = '//' , { ? any character except newline ? }
+                 | '/*' , { ? any character ? } , '*/' ;

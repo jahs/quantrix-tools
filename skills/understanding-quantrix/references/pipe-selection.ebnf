@@ -1,0 +1,225 @@
+(* ================================================================
+   QGroovy Pipe Selection Grammar
+   ================================================================
+
+   The pipe selection syntax |...| as used in Quantrix's "QGroovy"
+   scripting language — standard Groovy extended with pipe-delimited
+   cell/range references.
+
+   This grammar defines:
+   1. How pipe expressions are identified within Groovy source
+   2. What is valid between the pipe delimiters
+   3. How the content maps to getSelection() calls
+
+   The pipe content uses the same name-and-reference grammar as
+   getSelection(String), including Quantrix's single-quote convention
+   for names containing special characters (with '' for literal ').
+
+   It does NOT support:
+   - Recurrence references: [FIRST], [LAST], [THIS], [NEXT], [PREV]
+   - Recurrence offsets: [+1], [-1], [FIRST+3]
+   - Soft references: [~...]
+   - Formula expressions
+   - Meta functions (item, descriptor, level, id, silent, itemcount)
+   - In/using/skip clauses
+
+   These features are only available in the formula language, where
+   there is an evaluation context that gives them meaning.
+
+   Derived from:
+   - AutoSelectionParser.preprocessScript() — the built-in regex
+   - SelectionPreprocessor.preprocessScript() — our corrected version
+   - ModelImpl.getSelection(), HasProjection.getSelectionFromProjection()
+   - AbstractProjection.getRange(), getNodeRange()
+
+   Notation: ISO 14977 EBNF with (* comments *).
+   ================================================================ *)
+
+
+(* ── Pipe expression within Groovy source ────────────────────────
+
+   A pipe expression is delimited by '|' characters. The opening '|'
+   is recognised when it appears in a position where a new expression
+   could begin — i.e., NOT after an expression-ending token.
+
+   This uses the same disambiguation as the Groovy lexer's
+   isRegexAllowed() for '/' (regex vs division):
+
+   After these tokens, '|' is BINARY OR (not a pipe):
+     - Identifiers, numbers, string literals
+     - Boolean/null literals (true, false, null)
+     - this, super
+     - Closing brackets: ), ], }
+     - Postfix operators: ++, --
+
+   After everything else (operators, keywords, opening brackets,
+   start of source, newline outside parens), '|' opens a pipe.
+
+   Pipe expressions cannot span lines.
+*)
+
+pipe_expression  = '|' , pipe_content , '|' ;
+                   (* Transformed to: getSelection( pipe_string ) *)
+                   (* where pipe_string is the content as a Groovy *)
+                   (* double-quoted string literal with \ " $ escaped *)
+
+
+(* ── Pipe content ────────────────────────────────────────────────
+
+   The content between pipe delimiters. This is the selection
+   reference that gets passed to getSelection().
+*)
+
+pipe_content     = view_name , '::' , [ range_expression ]
+                 | view_name ;
+                   (* Pipe selections always reference a single view.
+                      Comma-separated view lists are accepted by
+                      getSelection(String) but are not part of pipe syntax.
+                      Examples:
+                        |Matrix1|              — the view itself
+                        |Matrix1::|            — all nodes in Matrix1
+                        |Matrix1::A1:B1|       — specific range
+                   *)
+
+
+(* ── Range expression ────────────────────────────────────────────
+
+   Identical to name-and-reference.ebnf range_expression,
+   but WITHOUT recurrence brackets.
+*)
+
+range_expression = formula_selector
+                 | sub_view_selection
+                 | cell_range
+                 | descriptor_expression
+                 | node_range
+                 | modifier
+                 | category_name ;
+                   (* modifier alone (Matrix1::* or Matrix1::^) selects
+                      all cells or all headers in the view.
+                      category_name is last — fallback when nothing else matches. *)
+
+formula_selector = 'Formula' , '::' , [ formula_index_range ] ;
+                   (* Examples: Formula::1, Formula::2-3, Formula:: *)
+
+formula_index_range = integer , [ '-' , integer ] ;
+
+sub_view_selection = name_section , '::' , [ range_expression ] ;
+                   (* Example: 'Matrix1 - Chart1'::Data::A1:B1 *)
+
+node_range       = coordinate , [ '..' , coordinate ] , [ modifier ] ;
+
+modifier         = '*'          (* cells only *)
+                 | '^' ;        (* nodes/headers only *)
+
+coordinate       = item_reference , { ':' , item_reference } ;
+
+item_reference   = name_section , { '.' , name_section } ;
+
+
+(* ── Cell coordinates ────────────────────────────────────────────
+   Numeric row/column references.
+*)
+
+cell_range       = cell_ref , [ '-' , cell_ref ] ;
+
+cell_ref         = '<' , integer , ',' , integer , '>' ;
+
+
+(* ── Descriptor expressions ──────────────────────────────────────
+
+descriptor_expression = node_range , '{' , descriptor_name , '}' ;
+                   (* Example: |Matrix1::A{Descriptor}| *)
+
+descriptor_name       = name_section ;
+
+
+(* ── Names within pipe content ───────────────────────────────────
+
+   Same quoting rules as name-and-reference.ebnf. Names containing
+   special characters (including '|' itself) must be single-quoted,
+   following Quantrix's standard convention. A literal single quote
+   within a quoted name is doubled: ''.
+
+   Examples:
+     |Matrix::'Name|Here'|              — pipe in name
+     |Matrix::'Shareholder''s Equity'|  — apostrophe in name
+     |'Matrix - Chart'::Data::A1|       — hyphen in view name
+*)
+
+name_section     = quoted_name | unquoted_name ;
+
+quoted_name      = "'" , { quoted_char } , "'" ;
+
+quoted_char      = "''"         (* escaped single quote → literal ' *)
+                 | ? any character except "'" and newline ? ;
+
+unquoted_name    = unquoted_start , { unquoted_cont } ;
+
+unquoted_start   = ? any character that is NOT:
+                     - a quoted_character (see name-and-reference.ebnf)
+                     - a digit (0-9)
+                     - '$'
+                     - whitespace
+                     - newline
+                   ? ;
+
+unquoted_cont    = unquoted_start
+                 | ' '          (* spaces allowed within names *)
+                 | digit ;      (* digits allowed after first character *)
+
+                   (* NameQuoter.cQuotedCharacters:
+                        ! " # & ( ) * + , - . / ; < = > @ [ ] ^ { | } : \
+                      Names containing any of these must be single-quoted.
+                      In pipe context, '|' is the pipe delimiter, so names
+                      containing '|' must be single-quoted: 'Name|Here'. *)
+
+
+(* ── View/matrix and category names ──────────────────────────────
+
+view_name        = name_section ;
+
+category_name    = name_section ;
+
+
+(* ── Numeric ─────────────────────────────────────────────────────
+
+integer          = digit , { digit } ;
+
+digit            = '0' | '1' | '2' | '3' | '4' | '5'
+                 | '6' | '7' | '8' | '9' ;
+
+
+(* ── Output transformation ───────────────────────────────────────
+
+   The preprocessor rewrites each pipe_expression to a Groovy
+   method call:
+
+     |Matrix::Cash:2020|                →  getSelection("Matrix::Cash:2020")
+     |M::'A B':X..'A B':Y|             →  getSelection("M::'A B':X..'A B':Y")
+     |M::'Name|Here'|                   →  getSelection("M::'Name|Here'")
+     |M::'Shareholder''s Equity'|       →  getSelection("M::'Shareholder''s Equity'")
+
+   The pipe content string is escaped for embedding in a Groovy
+   double-quoted string literal:
+     \  →  \\
+     "  →  \"
+     $  →  \$     (prevents GString interpolation)
+*)
+
+
+(* ── Context: Groovy source locations ────────────────────────────
+
+   Pipe expressions are recognised in Groovy code context.
+   They are NOT recognised inside:
+     - String literals (all 6 types: ', ", ''', """, /.../, $/.../$)
+     - Comments (// and /* */)
+
+   They ARE recognised inside GString interpolation ${...} blocks,
+   which is recursive — a pipe inside "${...}" within a string
+   IS transformed.
+
+   Newlines reset the expression context (making '|' a pipe
+   delimiter), EXCEPT inside () and [] where newlines are
+   insignificant — matching Groovy's own rule.
+*)
