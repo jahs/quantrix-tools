@@ -389,6 +389,19 @@ public class GroovyLoaderPlugin extends IPlugin.Adapter {
             GroovyShell shell = new GroovyShell(gcl);
             shell.setVariable("loader", this);
             initPlugin(entry, shell.evaluate(new GroovyCodeSource(entryPointUrl)));
+
+            // Groovy-compiled classes don't inherit JAR manifest attributes,
+            // so read the version from the manifest directly
+            if (entry.version == null || "dev".equals(entry.version)) {
+                java.util.jar.Manifest manifest = jar.getManifest();
+                if (manifest != null) {
+                    String implVersion = manifest.getMainAttributes()
+                            .getValue("Implementation-Version");
+                    if (implVersion != null && !implVersion.isEmpty()) {
+                        entry.version = implVersion;
+                    }
+                }
+            }
         }
     }
 
