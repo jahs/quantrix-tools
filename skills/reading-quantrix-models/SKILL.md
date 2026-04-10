@@ -1,11 +1,13 @@
 ---
 name: reading-quantrix-models
-description: Read, analyze, and extract data from Quantrix Modeler files (.model and .modelt). Use this skill whenever the user wants to open, inspect, understand, or work with Quantrix model files — including viewing matrices, formulas, dimensions, cell data, charts, canvas layouts, scripts, or model structure. Also trigger whenever encountering .model or .modelt file extensions, when the user mentions "Quantrix" in any context, or when working with multi-dimensional financial models that might be in Quantrix format.
+description: Read, analyze, and extract data from Quantrix Modeler files (.model, .modelt, and .xmodel) offline. Use this skill when the user wants to inspect model files directly from disk — including matrices, formulas, dimensions, cell data, charts, canvas layouts, scripts, or XML structure. Trigger on Quantrix model file extensions or explicit offline file-analysis tasks. For live automation against a running Quantrix app, use managing-quantrix instead.
 ---
 
 # Reading Quantrix Model Files
 
-Quantrix Modeler (https://quantrix.com) is a multi-dimensional spreadsheet application used for financial modeling, forecasting, and data analysis. Its native files (`.model` and `.modelt` templates) are (possibly Blowfish-encrypted) gzip-compressed XML.
+This skill is for offline model-file inspection. For Quantrix concepts, syntax, and formula semantics, read the [understanding-quantrix](https://raw.githubusercontent.com/jahs/quantrix-tools/main/skills/understanding-quantrix/SKILL.md) skill. For driving a running Quantrix desktop session, use [managing-quantrix](https://raw.githubusercontent.com/jahs/quantrix-tools/main/skills/managing-quantrix/SKILL.md).
+
+Quantrix model files (`.model`, `.modelt`, and `.xmodel`) are (possibly Blowfish-encrypted) gzip-compressed XML.
 
 ## Setup
 
@@ -42,12 +44,12 @@ For formula syntax, name quoting rules, and cell reference patterns, read the [u
 
 HTML entities in XML-stored formulas: `&quot;` for `"`, `&amp;` for `&`.
 
-Full function library and advanced patterns: `references/formulas.md`.
+Full function library and advanced patterns: [formulas.md](https://raw.githubusercontent.com/jahs/quantrix-tools/main/skills/understanding-quantrix/references/formulas.md).
 
 ## Detailed reference
 
-- `references/formulas.md` — All functions (financial, statistical, date, text, lookup, probability), operators, positional syntax, and common patterns.
-- `references/scripts.md` — Groovy scripting: action vs function scripts, pipe cell-reference syntax, model manipulation, user interaction, export.
+- [formulas.md](https://raw.githubusercontent.com/jahs/quantrix-tools/main/skills/understanding-quantrix/references/formulas.md) — Generic Quantrix formula reference: functions, operators, positional syntax, and common patterns.
+- [scripts.md](https://raw.githubusercontent.com/jahs/quantrix-tools/main/skills/managing-quantrix/references/scripts.md) — QGroovy scripting reference: action vs function scripts, pipe syntax, model manipulation, user interaction, and export.
 - `references/xml-schema.md` — Every XML element, attribute, and factory-id in the `.model` format. Use `scripts/qx.py xml` to dump raw XML for anything not covered by the CLI.
 - `references/library-usage.md` — Python API: `QxModel.load`, `to_dataframe`, accessing structure/formulas/scripts programmatically.
 

@@ -11,14 +11,26 @@
 # Installs:
 #   - Groovy Loader Plugin (JAR) → Quantrix plugins/
 #   - Quantrix Server Plugin (JAR) → Quantrix groovy-plugins/
-#   - Claude Code skills → ~/.claude/skills/
+#   - Skills → ~/.agents/skills/ (Codex, Gemini, OpenCode, Copilot, etc.)
+#     with symlinks from ~/.claude/skills/ for Claude Code
 #
 set -e
 
 REPO="jahs/quantrix-tools"
 QX_PLUGINS="$HOME/Library/Application Support/Quantrix/plugins"
 QX_GROOVY="$HOME/Library/Application Support/Quantrix/groovy-plugins"
+SKILLS_DIR="$HOME/.agents/skills"
 CLAUDE_SKILLS="$HOME/.claude/skills"
+
+install_skill_dir() {
+    local source_dir="$1"
+    local target_root="$2"
+    local skill_name="$3"
+
+    rm -rf "$target_root/$skill_name"
+    cp -r "$source_dir" "$target_root/$skill_name"
+    find "$target_root/$skill_name" -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
+}
 
 # Detect whether we're running from a local clone or via curl
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}" 2>/dev/null || echo ".")" && pwd)"
@@ -94,30 +106,43 @@ rm -rf "$QX_GROOVY/quantrix-server"
 cp "$STAGE"/quantrix-server-*.jar "$QX_GROOVY/"
 echo "  $QX_GROOVY/quantrix-server-${VERSION}.jar"
 
-# ── Install Claude Code skills ──────────────────────────────────────
+# ── Install skills ───────────────────────────────────────────────────
 
 echo ""
-echo "Installing Claude Code skills..."
-mkdir -p "$CLAUDE_SKILLS"
+echo "Installing skills..."
+mkdir -p "$SKILLS_DIR"
+
+SKILL_STAGE="$STAGE/skills"
+mkdir -p "$SKILL_STAGE"
 
 if [ "$MODE" = "local" ]; then
     for skill_dir in "$SCRIPT_DIR"/skills/*/; do
         [ -f "$skill_dir/SKILL.md" ] || continue
         skill_name=$(basename "$skill_dir")
-        rm -rf "$CLAUDE_SKILLS/$skill_name"
-        cp -r "$skill_dir" "$CLAUDE_SKILLS/$skill_name"
-        find "$CLAUDE_SKILLS/$skill_name" -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
+        install_skill_dir "$skill_dir" "$SKILLS_DIR" "$skill_name"
         echo "  $skill_name"
     done
 else
     for skill_name in $SKILL_NAMES; do
-        rm -rf "$CLAUDE_SKILLS/$skill_name"
-        echo -n "  $skill_name... "
-        curl -sfL "$DOWNLOAD_URL/${skill_name}.skill" -o "/tmp/${skill_name}.skill"
-        unzip -qo "/tmp/${skill_name}.skill" -d "$CLAUDE_SKILLS/"
-        rm -f "/tmp/${skill_name}.skill"
-        echo "ok"
+        echo "  $skill_name"
+        curl -sfL "$DOWNLOAD_URL/${skill_name}.skill" -o "$SKILL_STAGE/${skill_name}.skill"
+        rm -rf "$SKILL_STAGE/$skill_name"
+        unzip -qo "$SKILL_STAGE/${skill_name}.skill" -d "$SKILL_STAGE/"
+        install_skill_dir "$SKILL_STAGE/$skill_name" "$SKILLS_DIR" "$skill_name"
+        rm -rf "$SKILL_STAGE/$skill_name" "$SKILL_STAGE/${skill_name}.skill"
     done
+fi
+
+# Claude Code doesn't support ~/.agents/skills/ yet — symlink each skill
+if [ -d "$HOME/.claude" ]; then
+    mkdir -p "$CLAUDE_SKILLS"
+    for skill_dir in "$SKILLS_DIR"/*/; do
+        [ -f "$skill_dir/SKILL.md" ] || continue
+        skill_name=$(basename "$skill_dir")
+        rm -rf "$CLAUDE_SKILLS/$skill_name"
+        ln -s "$SKILLS_DIR/$skill_name" "$CLAUDE_SKILLS/$skill_name"
+    done
+    echo "  (symlinked into $CLAUDE_SKILLS for Claude Code)"
 fi
 
 # ── Done ────────────────────────────────────────────────────────────
@@ -125,4 +150,7 @@ fi
 echo ""
 echo "Done."
 echo "  Quantrix: restart to pick up plugin changes"
-echo "  Claude:   skills are available now in all projects"
+echo "  Skills:   installed to $SKILLS_DIR"
+if [ -d "$HOME/.claude" ]; then
+    echo "  Claude:   symlinked from $CLAUDE_SKILLS"
+fi

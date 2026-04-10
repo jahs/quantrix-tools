@@ -51,6 +51,7 @@ qxctl eval 'matrices.collect { it.name }'
 - `model`, `matrices` — the open model and its matrices
 - `getSelection()` — cell/range access by name
 - Pipe syntax `|Matrix::Item:Item|` — shorthand for `getSelection()`
+- `api` — scripting API introspection plus model-health helpers such as `api.problems()` and `api.warnings()`
 - Undo wrapping — the entire script is one undoable action
 - All Quantrix scripting API functions
 
@@ -64,6 +65,38 @@ m.categories.collect { cat ->
 }
 EOF
 ```
+
+### API introspection (`api` object)
+
+The sandbox injects an `api` helper for exploring the public scripting API and formula function catalogue:
+
+```bash
+# Browse exposed scripting types
+qxctl eval 'api.types()'
+qxctl eval 'api.type("Matrix")'
+qxctl eval 'api.member("Matrix", "formulae")'
+qxctl eval 'api.resolve("model.matrices.getAt.categories")'
+
+# Browse formula functions
+qxctl eval 'api.categories()'
+qxctl eval 'api.functions("Financial")'
+qxctl eval 'api.function("IF")'
+
+# Search both types and functions
+qxctl eval 'api.search("formula")'
+qxctl eval 'api.search("warning")'
+```
+
+Use `api` first when you need to discover available methods or formula functions. It is usually faster and more reliable than probing with metaclass tricks inside the sandbox.
+
+### Known scripting gaps
+
+For Quantrix formula semantics such as eclipsing, read the [understanding-quantrix](https://raw.githubusercontent.com/jahs/quantrix-tools/main/skills/understanding-quantrix/SKILL.md) skill. Operationally, the main gaps to keep in mind are:
+
+- Formula overlap / eclipsing is not surfaced by the sandboxed formula wrapper's `warningMessage`; use `api.warnings()`, `api.problems()`, or `eval-unsafe`.
+- `api.warnings()` and `api.problems()` work by calling internal desktop APIs behind the scenes, not by reading extra fields from the sandbox wrapper.
+- Formula diagnostics are split across layers: parse errors and simple warnings come from the scripting wrapper, while eclipse metadata and UI-style problems come from internal desktop APIs.
+- Java reflection and some metaclass-based discovery patterns are unreliable or blocked in the sandbox. Prefer `api.type()`, `api.member()`, `api.resolve()`, and `api.search()`.
 
 ## Common patterns
 
@@ -166,45 +199,38 @@ f.text = "Total = Units * Price"
 EOF
 ```
 
-### Checking formula errors
+### Formula diagnostics
 
-After creating or modifying formulas, **always check for errors**. The UI shows "Syntax error" but the scripting API exposes this via `errorMessage` and `warningMessage` on each formula object:
+For the conceptual differences between parse errors, warnings, eclipsing, and cell runtime errors, read the [understanding-quantrix](https://raw.githubusercontent.com/jahs/quantrix-tools/main/skills/understanding-quantrix/SKILL.md) skill. In a live session, these are the quickest checks:
 
 ```bash
-# Check all formulas for errors/warnings
+# Check the sandboxed formula wrappers
 qxctl eval << 'EOF'
 def m = matrices.getAt("Revenue")
 m.formulae.collect { f ->
     [text: f.text, error: f.errorMessage, warning: f.warningMessage]
 }
 EOF
-```
+# Document-level problems shown in the UI, including overlap quick fixes
+# (wrapped from the internal ProblemManager by api.problems())
+qxctl eval 'api.problems()'
 
-A formula with `errorMessage: null` and `warningMessage: ""` (or null) is valid.
+# Model-wide health: internal QFormula diagnostics plus ProblemManager issues
+qxctl eval 'api.warnings()'
+
+# Focus on eclipsed/eclipsing formulas only
+qxctl eval << 'EOF'
+api.warnings().findAll { it.source == "formula" && it.eclipse }
+EOF
+```
 
 **Key formula object methods:** `text` (get/set), `errorMessage` (read-only), `warningMessage` (read-only), `delete()`, `deleteWithoutClearing()`.
 
-**Three levels of formula feedback — always check all three after creating or modifying formulas:**
-
-| Level | Property | Catches | Example |
-|-------|----------|---------|---------|
-| Formula parse error | `errorMessage` | Syntax errors | `"Syntax error"` |
-| Formula warning | `warningMessage` | Circular references, other warnings | `"This formula is involved in one or more circular references."` |
-| Cell runtime error | `getValue()` returns a String | Dimension mismatches, bad refs, etc. | `"#VALUE!"`, `"#REF!"` |
-
-A formula can pass all three (valid + computes), fail at parse (`errorMessage`), pass parse but warn (`warningMessage` for circular refs), or pass both but produce cell errors (`#VALUE!` etc.). Always check all levels:
+Runtime cell errors such as `#VALUE!` and `#REF!` still need cell inspection. Spot-check them separately when a formula parses cleanly but computed cells look wrong:
 
 ```bash
-# Check all three levels on a matrix
 qxctl eval << 'EOF'
 def m = matrices.getAt("Result")
-
-// 1. Formula-level: parse errors and warnings
-def formulaIssues = m.formulae.asList().collect { f ->
-    [text: f.text, error: f.errorMessage, warning: f.warningMessage]
-}.findAll { it.error || it.warning }
-
-// 2. Cell-level: runtime errors (spot-check — adapt categories to your matrix)
 def cellErrors = []
 def cats = m.categories.asList()
 if (cats.size() >= 2) {
@@ -216,9 +242,7 @@ if (cats.size() >= 2) {
         }
     }
 }
-
-[formulaIssues: formulaIssues ?: "None",
- cellErrors: cellErrors ?: "None"]
+cellErrors
 EOF
 ```
 
@@ -265,6 +289,24 @@ app.openDocuments.collect { it.name }
 EOF
 ```
 
+Useful internal pattern when you need the raw document problem list without the sandbox helper:
+
+```bash
+qxctl eval-unsafe << 'EOF'
+def doc = quantrix.openDocuments[0]
+def pm = doc.getProblemManager()
+pm.refreshProblems()
+pm.getProblems().collect { p ->
+    [description: p.getDescription(),
+     level: p.getLevel().toString(),
+     location: String.valueOf(p.getLocation()),
+     fixes: p.getFixes().collect { it.displayString() }]
+}
+EOF
+```
+
+`api.problems()` and `api.warnings()` use the same internal document APIs under the hood, but keep that access encapsulated instead of exposing the raw document object inside sandboxed scripts.
+
 ## Multi-model support
 
 If multiple models are open, specify which with `-m`:
@@ -286,6 +328,8 @@ qx = QxClient()  # auto-detects model if only one open
 # Sandboxed scripting (pipe syntax works)
 qx.eval('|Revenue::Q1:Net Revenue|.value')
 qx.eval('matrices.collect { it.name }')
+qx.eval('api.types()')
+qx.eval('api.warnings()')
 
 # Unsafe scripting
 qx.eval_unsafe('System.getProperty("user.home")')
@@ -340,5 +384,6 @@ Scripts read from stdin if omitted — use heredoc or pipe from a file.
 
 ## Scripting API reference
 
+- `references/scripts.md` — Local QGroovy scripting reference: action vs function scripts, pipe syntax, model manipulation, user interaction, export
 - [Quantrix Scripting Guide](https://help.idbs.com/Quantrix/Modeler_Help/LATEST/en/quantrix-scripting.html)
 - [Quantrix Scripting API Reference](https://quantrix.com/help/scripting/index.html)

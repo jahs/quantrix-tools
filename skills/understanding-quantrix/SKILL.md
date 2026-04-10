@@ -49,6 +49,8 @@ Operators: `+` `-` `*` `/` `^` `&` `==` `<>` `<` `>` `<=` `>=` `#and#` `#or#` `#
 
 Comments: `//` line, `/* */` block.
 
+Full function library and advanced patterns: [formulas.md](https://raw.githubusercontent.com/jahs/quantrix-tools/main/skills/understanding-quantrix/references/formulas.md).
+
 ### Formula scoping and eclipsing
 
 **`In` scoping** is preferred when applying a formula to a subset of items. Compare:
@@ -56,7 +58,22 @@ Comments: `//` line, `/* */` block.
 - `In R1, : = sumproduct(A::, B::)` — clean, no warnings. Scopes the formula to R1, then `: =` assigns to all intersections within that scope.
 - `R1 = sumproduct(A::, B::)` — works but warns *"Too few items from category Row specified on the left side"* because the RHS produces more dimensions than the LHS names.
 
-**Eclipsing** occurs when two formulas have overlapping LHS targets without `skip` clauses. The later formula (higher index) wins for overlapping cells. The UI annotates this ("Eclipsed by 2" / "Eclipses 1") but this metadata is **not exposed** via the scripting API's `errorMessage` or `warningMessage`.
+**Eclipsing** occurs when two formulas have overlapping LHS targets without `skip` clauses. The later formula (higher index) wins for overlapping cells. The UI annotates this ("Eclipsed by 2" / "Eclipses 1"), but that metadata lives in internal desktop APIs such as `QFormula.getEclipseString()` and the document `ProblemManager`, not in the scripting wrapper's `errorMessage` or `warningMessage`.
+
+### Formula diagnostics
+
+Quantrix formula health shows up at several different layers:
+
+| Layer | Typical surface | Catches |
+|-------|------------------|---------|
+| Parse error | Formula `errorMessage` / `QFormula.getErrorMessage()` | Syntax errors |
+| Formula warning | Formula `warningMessage` / `QFormula.getWarningString()` | Circular references and other non-fatal warnings |
+| Eclipse metadata | `QFormula.getEclipseString()` / ProblemManager | Overlapping formulas, eclipsed formulas, suggested fixes |
+| Cell runtime error | Cell value like `#VALUE!` or `#REF!` | Dimension mismatches, bad refs, invalid calculations |
+
+These layers are distinct. A formula can parse successfully, have no warning string, and still be eclipsed by another formula; likewise it can parse and warn cleanly but still produce runtime cell errors.
+
+Use `In ... , : = ...` or explicit `skip` clauses when you want to scope a formula without overlapping broader formulas. For live inspection recipes, see the [managing-quantrix](https://raw.githubusercontent.com/jahs/quantrix-tools/main/skills/managing-quantrix/SKILL.md) skill.
 
 ## Name quoting rules
 
@@ -134,4 +151,4 @@ Nesting is strict: valid pipe selection ⊂ valid reference ⊂ valid formula LH
 
 - **reading-quantrix-models** — Parse .model/.modelt files offline
 - **building-quantrix-plugins** — Develop Groovy and Java plugins
-- **managing-quantrix** — Control a live Quantrix session via REST API
+- **managing-quantrix** — Control a live Quantrix session via REST API, inspect formula problems, and automate fixes

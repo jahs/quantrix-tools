@@ -12,6 +12,7 @@ CLI usage:
     qxctl.py eval << 'EOF'
     |Revenue::Q1:Net Revenue|.value
     EOF
+    qxctl.py eval 'api.types()'
     qxctl.py --help
 """
 import argparse
@@ -129,7 +130,8 @@ class QxClient:
         """Execute QGroovy in the Quantrix scripting context (sandboxed).
 
         The script gets the full scripting context: model, matrices,
-        getSelection(), pipe syntax (|...|). Undo-wrapped.
+        getSelection(), pipe syntax (|...|), and the `api` helper
+        for scripting introspection and model-health checks. Undo-wrapped.
         """
         mid = urllib.request.quote(model or self._resolve_model(), safe="")
         d = self._http("POST", f"/models/{mid}/script",

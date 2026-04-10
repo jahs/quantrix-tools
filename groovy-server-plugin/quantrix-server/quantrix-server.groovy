@@ -68,15 +68,16 @@ import java.awt.*
 
 // ── API introspection ───────────────────────────────────────────────
 // QxDocs class is compiled from qx-docs.groovy by the Groovy Loader
-// Plugin before this entry point runs.  Provides the `api` object
-// injected into sandboxed eval scripts.
+// Plugin before this entry point runs. It builds the `api` object
+// lazily per eval request so closures can capture the current document.
 
-@Field def qxDocs = null
-try {
-    qxDocs = QxDocs.build()
-} catch (Throwable t) {
-    println "[QuantrixServer] QxDocs init failed: ${t.class.name}: ${t.message}"
-    t.printStackTrace(System.err)
+def registerDocsApi(context, QModelDocument doc) {
+    try {
+        context.registerVariable("api", Object, QxDocs.build(doc))
+    } catch (Throwable t) {
+        println "[QuantrixServer] QxDocs init failed: ${t.class.name}: ${t.message}"
+        t.printStackTrace(System.err)
+    }
 }
 
 // ── HTTP helpers ────────────────────────────────────────────────────
@@ -151,7 +152,7 @@ def evalScript(QModelDocument doc, String script) {
     def context = XGroovyFactory.cInstance.getGroovyContext(frame)
     def scriptClass = XGroovyFactory.cInstance.compileScript(context, script)
     def scriptInstance = scriptClass.getDeclaredConstructor().newInstance()
-    if (qxDocs != null) context.registerVariable("api", Object, qxDocs)
+    registerDocsApi(context, doc)
     context.createBindingOn(scriptInstance)
 
     def result = frame.perform("Eval", "Eval", {

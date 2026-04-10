@@ -16,8 +16,12 @@
  *   api.function("IF")             — single function detail
  *   api.categories()               — formula function categories
  *   api.search("formula")          — search across types + functions
+ *   api.problems()                 — document-level problems from ProblemManager
+ *   api.warnings()                 — formula warnings/errors/eclipses + problems
  *
  * Compiled automatically by the Groovy Loader Plugin (helper .groovy file).
+ * The current document is passed in internally when building `api`, but is not
+ * exposed directly as a sandbox variable.
  */
 
 class QxDocs {
@@ -27,6 +31,22 @@ class QxDocs {
         "com.quantrix.scripting.core.sapi",
         "com.subx.scripting.core.sapi",
     ] as Set
+
+    // Seed common scripting types explicitly so list-contained types such as
+    // Formula do not depend on reachability from Model's return types.
+    private static final List<String> ROOT_TYPES = [
+        "com.quantrix.scripting.core.sapi.Model",
+        "com.quantrix.scripting.core.sapi.Matrix",
+        "com.quantrix.scripting.core.sapi.Category",
+        "com.quantrix.scripting.core.sapi.Item",
+        "com.quantrix.scripting.core.sapi.View",
+        "com.quantrix.scripting.core.sapi.Cell",
+        "com.quantrix.scripting.core.sapi.Formula",
+    ]
+
+    private static final Object CACHE_LOCK = new Object()
+    private static Map cachedTypeCache = null
+    private static Map cachedFunctionCache = null
 
     // ── BoundType helpers ──────────────────────────────────────────
     // Use explicit Java method calls to avoid Groovy metaclass
@@ -65,16 +85,24 @@ class QxDocs {
         def cache = [:]
         def queue = []
 
-        try {
-            queue << BoundType.get(Class.forName("com.quantrix.scripting.core.sapi.Model"))
-        } catch (e) {
-            println "[QxDocs] failed to seed Model type: ${e.message}"
+        ROOT_TYPES.each { className ->
+            try {
+                def bt = BoundType.get(Class.forName(className))
+                if (bt != null) queue << bt
+            } catch (e) {
+                // Skip optional or unavailable types.
+            }
+        }
+
+        if (!queue) {
+            println "[QxDocs] failed to seed scripting types"
             return cache
         }
 
         def seen = new HashSet<String>()
         while (queue) {
             def bt = queue.remove(0)
+            if (bt == null) continue
             def name = btSimpleName(bt)
             def fullName = btClassName(bt)
             if (seen.contains(fullName)) continue
@@ -100,7 +128,7 @@ class QxDocs {
                 bt.getBaseClass()?.getInterfaces()?.each { iface ->
                     if (SAPI_PACKAGES.any { pkg -> iface.getName().startsWith(pkg + ".") }) {
                         def ifBt = BoundType.get(iface)
-                        if (!seen.contains(iface.getName())) queue << ifBt
+                        if (ifBt != null && !seen.contains(iface.getName())) queue << ifBt
                     }
                 }
             } catch (e) { /* skip */ }
@@ -108,6 +136,13 @@ class QxDocs {
 
         println "[QxDocs] indexed ${cache.size()} types: ${cache.keySet().sort().join(', ')}"
         cache
+    }
+
+    private static Map getTypeCache() {
+        synchronized (CACHE_LOCK) {
+            if (cachedTypeCache == null) cachedTypeCache = buildTypeCache()
+            cachedTypeCache
+        }
     }
 
     // ── Formula function discovery ─────────────────────────────────
@@ -156,11 +191,76 @@ class QxDocs {
         [all: allFunctions, byName: byName, byCategory: byCategory]
     }
 
+    private static Map getFunctionCache() {
+        synchronized (CACHE_LOCK) {
+            if (cachedFunctionCache == null) cachedFunctionCache = buildFunctionCache()
+            cachedFunctionCache
+        }
+    }
+
+    // ── Document health helpers ────────────────────────────────────
+
+    private static String textOrNull(value) {
+        if (value == null) return null
+        def text = value.toString().trim()
+        text ? text : null
+    }
+
+    private static List collectProblemSummaries(document) {
+        def pm = document?.getProblemManager()
+        if (!pm) return []
+
+        pm.refreshProblems()
+        (pm.getProblems() ?: []).collect { p ->
+            [
+                description: textOrNull(p.getDescription()),
+                level: textOrNull(p.getLevel()),
+                location: textOrNull(p.getLocation()),
+                fixes: ((p.getFixes() ?: []).collect { fix ->
+                    textOrNull(fix.displayString()) ?: textOrNull(fix)
+                }).findAll { it },
+            ]
+        }
+    }
+
+    private static List collectFormulaIssues(document) {
+        def model = document?.getModel()
+        if (!model) return []
+
+        (model.getMatrices() ?: []).collectMany { matrix ->
+            def matrixName = textOrNull(matrix.getName()) ?: matrix.toString()
+            (matrix.getFormulae() ?: []).withIndex().collect { formula, index ->
+                def error = textOrNull(formula.getErrorMessage())
+                def warning = textOrNull(formula.getWarningString())
+                def eclipse = textOrNull(formula.getEclipseString())
+
+                def cycles = false
+                try {
+                    cycles = formula.isInvolvedInCycles()
+                } catch (Exception ignored) {
+                    cycles = false
+                }
+
+                if (!error && !warning && !eclipse && !cycles) return null
+
+                [
+                    matrix: matrixName,
+                    formulaIndex: index,
+                    formula: textOrNull(formula.getStringRepresentation()),
+                    error: error,
+                    warning: warning,
+                    eclipse: eclipse,
+                    cycles: cycles,
+                ]
+            }.findAll { it != null }
+        }
+    }
+
     // ── Public factory ─────────────────────────────────────────────
 
-    static Expando build() {
-        def typeCache = buildTypeCache()
-        def funcCache = buildFunctionCache()
+    static Expando build(document = null) {
+        def typeCache = getTypeCache()
+        def funcCache = getFunctionCache()
 
         def api = new Expando()
 
@@ -267,6 +367,34 @@ class QxDocs {
             fn
         }
 
+        // ── Document / model health ──
+
+        api.problems = { ->
+            if (!document) return [error: "ProblemManager is unavailable without a bound document"]
+            try {
+                collectProblemSummaries(document)
+            } catch (Exception t) {
+                [error: "Failed to collect document problems: ${t.message ?: t.class.name}"]
+            }
+        }
+
+        api.warnings = { ->
+            if (!document) return [error: "Document warnings are unavailable without a bound document"]
+
+            try {
+                def formulaIssues = collectFormulaIssues(document).collect { issue ->
+                    issue + [source: "formula"]
+                }
+                def problems = collectProblemSummaries(document).collect { problem ->
+                    problem + [source: "problem"]
+                }
+
+                formulaIssues + problems
+            } catch (Exception t) {
+                [error: "Failed to collect document warnings: ${t.message ?: t.class.name}"]
+            }
+        }
+
         // ── Search ──
 
         api.search = { String query ->
@@ -297,7 +425,7 @@ class QxDocs {
 
         api.toString = { ->
             "QxDocs: ${typeCache.size()} types, ${funcCache.all.size()} functions. " +
-            "Use api.types(), api.type(name), api.functions(), api.search(q)"
+            "Use api.types(), api.type(name), api.functions(), api.search(q), api.problems(), api.warnings()"
         }
 
         api

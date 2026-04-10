@@ -1,6 +1,6 @@
 # Quantrix Tools
 
-Plugins, scripts, and Claude Code skills for working with [Quantrix Modeler](https://quantrix.com) — a genuinely excellent multi-dimensional spreadsheet. If you haven't tried it: go buy it. It's what spreadsheets should have been all along.
+Plugins, scripts, and skills for working with [Quantrix Modeler](https://quantrix.com) — a genuinely excellent multi-dimensional spreadsheet. If you haven't tried it: go buy it. It's what spreadsheets should have been all along.
 
 ## What's in here
 
@@ -8,7 +8,7 @@ Plugins, scripts, and Claude Code skills for working with [Quantrix Modeler](htt
 
 **groovy-server-plugin/** — A Groovy plugin (loaded by the above) that runs a localhost HTTP server inside Quantrix. Gives you full programmatic control of open models: run scripts, read/write cells by named coordinates, manage formulas, inspect structure. Includes the pipe-syntax preprocessor, so scripts submitted via the API get the same `|Matrix::Item|` shorthand as the in-app console — but with correct handling of strings, comments, and GString interpolation.
 
-**skills/** — Four [Claude Code](https://docs.anthropic.com/en/docs/claude-code) skills that teach Claude how to work with Quantrix:
+**skills/** — Four skills for ~/.agents compatible coding agents, and Claude Code:
 
 - **understanding-quantrix** — Core concepts, formula syntax, name quoting rules, cell reference grammar. The other skills build on this.
 - **reading-quantrix-models** — Parse `.model` and `.modelt` files offline with a CLI and Python library.
