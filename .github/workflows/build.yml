@@ -12,10 +12,10 @@ jobs:
     name: Server Plugin (build + test)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0  # full history for git describe
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 11
@@ -23,7 +23,7 @@ jobs:
         working-directory: groovy-server-plugin
         run: ./build.sh
       - name: Upload plugin JAR
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: quantrix-server
           path: groovy-server-plugin/dist/quantrix-server-*.jar
@@ -32,10 +32,10 @@ jobs:
     name: Loader Plugin (build)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 11
@@ -43,7 +43,7 @@ jobs:
         working-directory: groovy-loader-plugin
         run: ./build.sh
       - name: Upload JAR
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: groovy-loader-plugin
           path: groovy-loader-plugin/dist/groovy-loader-plugin-*.jar
@@ -52,8 +52,8 @@ jobs:
     name: Package skills
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
       - name: Validate skill frontmatter
@@ -90,7 +90,7 @@ jobs:
           done
           ls -lh dist/
       - name: Upload skill packages
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: skills
           path: dist/*.skill
@@ -99,12 +99,12 @@ jobs:
     name: Claude plugin (validate + package)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0  # full history for git describe
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          node-version: '22'
       - name: Install Claude Code CLI
         run: npm install -g @anthropic-ai/claude-code
       - name: Validate plugin manifests
@@ -135,7 +135,7 @@ jobs:
           (cd "$STAGE" && zip -r "$ZIP" .)
           ls -lh dist/
       - name: Upload plugin zip
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: quantrix-tools-plugin
           path: dist/*.zip
@@ -148,21 +148,21 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: quantrix-server
           path: release/
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: groovy-loader-plugin
           path: release/
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: skills
           path: release/
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: quantrix-tools-plugin
           path: release/
@@ -171,7 +171,7 @@ jobs:
         run: cp install.sh release/
 
       - name: Create release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
           files: |
