@@ -1,0 +1,10 @@
+{
+  "name": "quantrix-tools",
+  "description": "Skills and live-session MCP server for Quantrix Modeler. Bundles four skills (concepts, model-file reading, live-session control, plugin authoring) and an MCP server that drives a running Quantrix instance via the Groovy Server Plugin.",
+  "author": {
+    "name": "jahs"
+  },
+  "homepage": "https://github.com/jahs/quantrix-tools",
+  "repository": "https://github.com/jahs/quantrix-tools",
+  "license": "see LICENSE"
+}

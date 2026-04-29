@@ -12,7 +12,7 @@
 #   - Groovy Loader Plugin (JAR) → Quantrix plugins/
 #   - Quantrix Server Plugin (JAR) → Quantrix groovy-plugins/
 #   - Skills → ~/.agents/skills/ (Codex, Gemini, OpenCode, Copilot, etc.)
-#     with symlinks from ~/.claude/skills/ for Claude Code
+#   - Claude Code plugin (skills + MCP server) if `claude` CLI is on PATH
 #
 set -e
 
@@ -21,6 +21,8 @@ QX_PLUGINS="$HOME/Library/Application Support/Quantrix/plugins"
 QX_GROOVY="$HOME/Library/Application Support/Quantrix/groovy-plugins"
 SKILLS_DIR="$HOME/.agents/skills"
 CLAUDE_SKILLS="$HOME/.claude/skills"
+CLAUDE_PLUGIN_INSTALLED=0
+UV_MISSING=0
 
 install_skill_dir() {
     local source_dir="$1"
@@ -133,16 +135,60 @@ else
     done
 fi
 
-# Claude Code doesn't support ~/.agents/skills/ yet — symlink each skill
+# ── Install Claude Code plugin ──────────────────────────────────────
+#
+# Plugin form bundles the same skills plus an MCP server, so sandboxed
+# Claude environments (Cowork, remote agents) can drive Quantrix without
+# direct localhost or filesystem access.
+
 if [ -d "$HOME/.claude" ]; then
-    mkdir -p "$CLAUDE_SKILLS"
-    for skill_dir in "$SKILLS_DIR"/*/; do
-        [ -f "$skill_dir/SKILL.md" ] || continue
-        skill_name=$(basename "$skill_dir")
-        rm -rf "$CLAUDE_SKILLS/$skill_name"
-        ln -s "$SKILLS_DIR/$skill_name" "$CLAUDE_SKILLS/$skill_name"
-    done
-    echo "  (symlinked into $CLAUDE_SKILLS for Claude Code)"
+    if command -v claude >/dev/null 2>&1; then
+        # Clean up old-style symlinks from previous installer versions
+        if [ -d "$CLAUDE_SKILLS" ]; then
+            for skill_dir in "$SKILLS_DIR"/*/; do
+                [ -d "$skill_dir" ] || continue
+                skill_name=$(basename "$skill_dir")
+                if [ -L "$CLAUDE_SKILLS/$skill_name" ]; then
+                    rm -f "$CLAUDE_SKILLS/$skill_name"
+                fi
+            done
+        fi
+
+        # Local clone → install from local source so dev iteration works
+        # without pushing. Remote curl|bash → install from the GitHub repo.
+        if [ "$MODE" = "local" ]; then
+            MARKETPLACE_SRC="$SCRIPT_DIR"
+        else
+            MARKETPLACE_SRC="$REPO"
+        fi
+
+        echo ""
+        echo "Installing Claude Code plugin..."
+
+        # add is idempotent ("already on disk"); update refreshes after a pull;
+        # install is also idempotent. All three exit 0 on repeat runs.
+        # `if X && Y && Z` is a single conditional, so set -e doesn't halt on a
+        # mid-chain failure — we surface a real error message instead.
+        if claude plugin marketplace add "$MARKETPLACE_SRC" >/dev/null \
+            && claude plugin marketplace update quantrix-tools >/dev/null \
+            && claude plugin install quantrix-tools@quantrix-tools >/dev/null; then
+            echo "  quantrix-tools (skills + MCP server)"
+            CLAUDE_PLUGIN_INSTALLED=1
+        else
+            echo "  Claude plugin install failed (see errors above)"
+        fi
+
+        # Plugin's MCP server launches via `uv run --with mcp`; warn if missing
+        if ! command -v uv >/dev/null 2>&1; then
+            UV_MISSING=1
+        fi
+    else
+        echo ""
+        echo "Note: ~/.claude exists but 'claude' CLI not on PATH — skipping plugin install."
+        echo "      Install manually inside Claude Code:"
+        echo "        /plugin marketplace add $REPO"
+        echo "        /plugin install quantrix-tools@quantrix-tools"
+    fi
 fi
 
 # ── Done ────────────────────────────────────────────────────────────
@@ -151,6 +197,11 @@ echo ""
 echo "Done."
 echo "  Quantrix: restart to pick up plugin changes"
 echo "  Skills:   installed to $SKILLS_DIR"
-if [ -d "$HOME/.claude" ]; then
-    echo "  Claude:   symlinked from $CLAUDE_SKILLS"
+if [ "$CLAUDE_PLUGIN_INSTALLED" = "1" ]; then
+    echo "  Claude:   plugin installed (run /plugin in Claude Code to manage)"
+fi
+if [ "$UV_MISSING" = "1" ]; then
+    echo ""
+    echo "Heads up: the Claude plugin's MCP server needs uv. Install with:"
+    echo "  curl -LsSf https://astral.sh/uv/install.sh | sh"
 fi

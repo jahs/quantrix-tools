@@ -1,0 +1,16 @@
+{
+  "name": "quantrix-tools",
+  "metadata": {
+    "description": "Quantrix Modeler skills and live-session MCP server"
+  },
+  "owner": {
+    "name": "jahs"
+  },
+  "plugins": [
+    {
+      "name": "quantrix-tools",
+      "description": "Skills and live-session MCP server for Quantrix Modeler",
+      "source": "./"
+    }
+  ]
+}

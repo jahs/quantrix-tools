@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "quantrix": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--with", "mcp",
+        "--",
+        "${CLAUDE_PLUGIN_ROOT}/skills/managing-quantrix/scripts/qxctl.py",
+        "mcp-server"
+      ]
+    }
+  }
+}

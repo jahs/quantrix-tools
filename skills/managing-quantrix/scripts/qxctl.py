@@ -263,6 +263,66 @@ def cmd_reload_all(args):
     return _run(args, lambda q: q.reload_all())
 
 
+# ── MCP server ───────────────────────────────────────────────────────
+
+def cmd_mcp_server(args):
+    """Run an MCP server (stdio) that exposes qxctl as tools.
+
+    Used by the Claude Code plugin so sandboxed agents can drive
+    Quantrix without direct localhost or filesystem access.
+    """
+    try:
+        from mcp.server.fastmcp import FastMCP
+    except ImportError:
+        print(
+            "Error: mcp package not installed. "
+            "Run via: uv run --with mcp qxctl.py mcp-server",
+            file=sys.stderr,
+        )
+        return False
+
+    qx = _make_client(args)
+    server = FastMCP("quantrix")
+
+    @server.tool()
+    def status() -> dict:
+        """Server health check and open model list."""
+        return qx.status()
+
+    @server.tool()
+    def models() -> list:
+        """List all open models."""
+        return qx.models()
+
+    @server.tool()
+    def eval(script: str, model: str = None):
+        """Run sandboxed QGroovy. Pipe syntax |Matrix::Item:Item| and `api` helper available. Undo-wrapped."""
+        return qx.eval(script, model=model)
+
+    @server.tool()
+    def eval_unsafe(script: str):
+        """Run raw Groovy outside the sandbox. No model context, no pipe syntax, no undo. Use sparingly."""
+        return qx.eval_unsafe(script)
+
+    @server.tool()
+    def plugins() -> list:
+        """List loaded Groovy plugins."""
+        return qx.plugins()
+
+    @server.tool()
+    def reload_plugin(plugin_id: str):
+        """Reload a specific Groovy plugin by ID."""
+        return qx.reload_plugin(plugin_id)
+
+    @server.tool()
+    def reload_all():
+        """Reload all Groovy plugins (restarts the server)."""
+        return qx.reload_all()
+
+    server.run()
+    return True
+
+
 # ── Argument parser ──────────────────────────────────────────────────
 
 def build_parser():
@@ -280,6 +340,7 @@ def build_parser():
   qxctl eval-unsafe 'System.getProperty("user.home")'
   qxctl plugins
   qxctl reload-all
+  uv run --with mcp qxctl.py mcp-server   # MCP stdio server (used by Claude plugin)
 
 environment:
   QX_PORT    Server port (default: 8182)
@@ -316,6 +377,10 @@ environment:
 
     sub.add_parser("reload-all", help="Reload all groovy plugins (restarts server)")
 
+    sub.add_parser("mcp-server",
+                   help="Run an MCP stdio server exposing qxctl as tools "
+                        "(requires `mcp`; use `uv run --with mcp ...`)")
+
     return p
 
 
@@ -324,6 +389,7 @@ COMMANDS = {
     "eval": cmd_eval, "eval-unsafe": cmd_eval_unsafe,
     "plugins": cmd_plugins, "reload-plugin": cmd_reload_plugin,
     "reload-all": cmd_reload_all,
+    "mcp-server": cmd_mcp_server,
 }
 
 
