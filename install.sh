@@ -23,6 +23,7 @@ SKILLS_DIR="$HOME/.agents/skills"
 CLAUDE_SKILLS="$HOME/.claude/skills"
 CLAUDE_PLUGIN_INSTALLED=0
 UV_MISSING=0
+INSTALLED_SKILLS=()
 
 install_skill_dir() {
     local source_dir="$1"
@@ -122,6 +123,7 @@ if [ "$MODE" = "local" ]; then
         [ -f "$skill_dir/SKILL.md" ] || continue
         skill_name=$(basename "$skill_dir")
         install_skill_dir "$skill_dir" "$SKILLS_DIR" "$skill_name"
+        INSTALLED_SKILLS+=("$skill_name")
         echo "  $skill_name"
     done
 else
@@ -131,6 +133,7 @@ else
         rm -rf "$SKILL_STAGE/$skill_name"
         unzip -qo "$SKILL_STAGE/${skill_name}.skill" -d "$SKILL_STAGE/"
         install_skill_dir "$SKILL_STAGE/$skill_name" "$SKILLS_DIR" "$skill_name"
+        INSTALLED_SKILLS+=("$skill_name")
         rm -rf "$SKILL_STAGE/$skill_name" "$SKILL_STAGE/${skill_name}.skill"
     done
 fi
@@ -143,17 +146,6 @@ fi
 
 if [ -d "$HOME/.claude" ]; then
     if command -v claude >/dev/null 2>&1; then
-        # Clean up old-style symlinks from previous installer versions
-        if [ -d "$CLAUDE_SKILLS" ]; then
-            for skill_dir in "$SKILLS_DIR"/*/; do
-                [ -d "$skill_dir" ] || continue
-                skill_name=$(basename "$skill_dir")
-                if [ -L "$CLAUDE_SKILLS/$skill_name" ]; then
-                    rm -f "$CLAUDE_SKILLS/$skill_name"
-                fi
-            done
-        fi
-
         # Local clone → install from local source so dev iteration works
         # without pushing. Remote curl|bash → install from the GitHub repo.
         if [ "$MODE" = "local" ]; then
@@ -174,6 +166,15 @@ if [ -d "$HOME/.claude" ]; then
             && claude plugin install quantrix-tools@quantrix-tools >/dev/null; then
             echo "  quantrix-tools (skills + MCP server)"
             CLAUDE_PLUGIN_INSTALLED=1
+
+            # Migrate only this package's legacy links, after the replacement
+            # plugin is installed. Preserve custom links and unrelated skills.
+            for skill_name in "${INSTALLED_SKILLS[@]}"; do
+                if [ -L "$CLAUDE_SKILLS/$skill_name" ] \
+                    && [ "$CLAUDE_SKILLS/$skill_name" -ef "$SKILLS_DIR/$skill_name" ]; then
+                    rm -f "$CLAUDE_SKILLS/$skill_name"
+                fi
+            done
         else
             echo "  Claude plugin install failed (see errors above)"
         fi

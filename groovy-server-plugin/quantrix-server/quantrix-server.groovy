@@ -1,518 +1,383 @@
 /*
- * Quantrix HTTP Server Plugin (Groovy)
+ * Quantrix HTTP Server Plugin
  *
- * Provides a localhost HTTP server for executing Groovy scripts in the
- * Quantrix scripting context and managing groovy plugins.
+ * Loaded by the Groovy Loader Plugin. Runs a loopback HTTP server for
+ * model scripting and plugin management.
  *
  * Endpoints:
- *   GET  /status                         — server health + model list
- *   GET  /models                         — list open models
- *   POST /models/{id}/script             — sandboxed model scripting (undo-wrapped)
- *   POST /system/script-unsafe           — raw Groovy, no sandbox
- *   GET  /loader/plugins                 — list loaded groovy plugins
- *   POST /loader/plugins/{id}/reload     — reload one plugin
- *   POST /loader/reload                  — reload all plugins
+ *   GET  /status
+ *   GET  /models
+ *   POST /models/{id}/script          — sandboxed, undo-wrapped QGroovy
+ *   POST /system/script-unsafe        — raw Groovy, no sandbox or undo
+ *   GET  /loader/plugins
+ *   POST /loader/plugins/{id}/reload
+ *   POST /loader/reload
  *
- * Script endpoints accept:
- *   Content-Type: text/x-groovy  — body IS the script (preferred)
- *   Content-Type: application/json — {"script": "..."}
- *
- * Authentication:
- *   On startup the server generates a bearer token and writes it to
- *   ~/Library/Application Support/Quantrix/.server-token (mode 0600).
- *   All requests must include:  Authorization: Bearer <token>
- *
- * Loaded by the Groovy Loader Plugin. Returns an IPlugin instance.
+ * Script requests accept text/x-groovy or application/json {"script": "..."}.
+ * All requests require Authorization: Bearer <token>. The token is written
+ * to ~/Library/Application Support/Quantrix/.server-token with mode 0600.
  */
 
-import com.subx.framework.IPlugin
-import com.sun.net.httpserver.HttpServer
-import com.sun.net.httpserver.HttpExchange
 import com.quantrix.core.api.QModelDocument
 import com.quantrix.core.api.QModelDocumentApplication
 import com.subx.document.ui.iapi.DocumentUIApplication
+import com.subx.framework.IPlugin
 import com.subx.scripting.core.api.XGroovyFactory
-import groovy.json.JsonSlurper
+import com.sun.net.httpserver.HttpExchange
+import com.sun.net.httpserver.HttpHandler
+import com.sun.net.httpserver.HttpServer
 import groovy.json.JsonOutput
-import groovy.transform.Field
+import groovy.json.JsonSlurper
 import net.jahs.quantrix.preprocessor.SelectionPreprocessor
 
-import java.net.InetAddress
-import java.net.InetSocketAddress
-import java.text.SimpleDateFormat
-import java.util.concurrent.Executors
+import java.awt.*
+import java.lang.reflect.InvocationTargetException
 import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.StandardCopyOption
 import java.nio.file.attribute.PosixFilePermissions
+import java.time.LocalTime
+import java.time.format.DateTimeFormatter
+import java.util.List
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.regex.Pattern
 import javax.swing.*
-import java.awt.*
 
-// All @Field variables are instance fields on the script class,
-// visible to both run() locals and def methods.
+class QuantrixServerPlugin extends IPlugin.Adapter {
+    private static final Pattern MODEL_SCRIPT_ROUTE = Pattern.compile('^/models/([^/]+)/script$')
+    private static final Pattern PLUGIN_RELOAD_ROUTE = Pattern.compile('^/loader/plugins/([^/]+)/reload$')
+    private static final DateTimeFormatter REQUEST_TIME_FORMAT = DateTimeFormatter.ofPattern("HH:mm:ss.SSS")
 
-@Field String PLUGIN_ID = "net.jahs.quantrix.server"
-@Field int SERVER_PORT = 8182
-@Field int serverPort = 8182
-@Field String TOKEN_PATH = System.getProperty("user.home") + "/Library/Application Support/Quantrix/.server-token"
-@Field String authToken = null
+    def loader
+    int listenPort = 8182
+    Path authTokenPath = Path.of(System.getProperty("user.home"),
+        "Library/Application Support/Quantrix/.server-token")
 
-// Route patterns
-@Field Pattern MODELS_SCRIPT = Pattern.compile('^/models/([^/]+)/script$')
-@Field Pattern LOADER_PLUGIN_RELOAD = Pattern.compile('^/loader/plugins/([^/]+)/reload$')
+    private HttpServer httpServer
+    private ExecutorService requestExecutor
+    private String authToken
 
-// Request log state
-@Field java.util.List logLines = Collections.synchronizedList(new ArrayList<String>())
-@Field JTextArea logTextArea = null
-@Field JDialog logDialog = null
-@Field SimpleDateFormat dateFormat = new SimpleDateFormat("HH:mm:ss.SSS")
+    // Log history and Swing widgets are confined to the EDT.
+    private final List<String> logLines = []
+    private JTextArea logTextArea
+    private JDialog logDialog
 
-// ── API introspection ───────────────────────────────────────────────
-// QxDocs class is compiled from qx-docs.groovy by the Groovy Loader
-// Plugin before this entry point runs. It builds the `api` object
-// lazily per eval request so closures can capture the current document.
+    @Override
+    String getId() { "net.jahs.quantrix.server" }
 
-def registerDocsApi(context, QModelDocument doc) {
-    try {
-        context.registerVariable("api", Object, QxDocs.build(doc))
-    } catch (Throwable t) {
-        println "[QuantrixServer] QxDocs init failed: ${t.class.name}: ${t.message}"
-        t.printStackTrace(System.err)
-    }
-}
-
-// ── HTTP helpers ────────────────────────────────────────────────────
-
-// Track the response status code for logging (set by sendJson, read by requestHandler)
-@Field ThreadLocal<Integer> responseStatus = ThreadLocal.withInitial { 200 }
-
-def sendJson(HttpExchange ex, int status, Object body) {
-    responseStatus.set(status)
-    def json = (body instanceof String) ? body : JsonOutput.toJson(body)
-    def bytes = json.getBytes("UTF-8")
-    ex.responseHeaders.set("Content-Type", "application/json; charset=utf-8")
-    ex.sendResponseHeaders(status, bytes.length)
-    ex.responseBody.write(bytes)
-    ex.responseBody.close()
-}
-
-def sendError(HttpExchange ex, int status, String code, String message) {
-    sendJson(ex, status, [error: [code: code, message: message], status: status])
-}
-
-def readBody(HttpExchange ex) {
-    ex.requestBody.withReader("UTF-8") { it.text }
-}
-
-def extractScript(HttpExchange ex) {
-    def contentType = ex.requestHeaders.getFirst("Content-Type") ?: ""
-    def body = readBody(ex)
-    if (!body?.trim()) return null
-    if (contentType.startsWith("application/json")) {
-        return new JsonSlurper().parseText(body).script
-    }
-    // text/x-groovy, text/plain, or anything else — body IS the script
-    return body
-}
-
-// ── Model resolution ────────────────────────────────────────────────
-
-def getApp() {
-    QModelDocumentApplication.cFactory.getInstance()
-}
-
-def resolveDocument(String modelId) {
-    def app = getApp()
-    if (!app) return null
-    def docs = app.openDocuments
-    if (!docs) return null
-    if (!modelId) return null
-    docs.find { it.name.equalsIgnoreCase(modelId) }
-}
-
-def listModels() {
-    def app = getApp()
-    if (!app) return []
-    (app.openDocuments ?: []).collect { doc ->
-        [id: doc.name, name: doc.name, dirty: doc.dirty, readOnly: doc.readOnly]
-    }
-}
-
-// ── Eval engines ────────────────────────────────────────────────────
-
-def evalScript(QModelDocument doc, String script) {
-    def uiApp = DocumentUIApplication.runningInstance()
-    if (!uiApp) throw new RuntimeException("UI application not available")
-
-    def frame = uiApp.getUIForDocument(doc, false)
-    if (!frame) throw new RuntimeException("No UI frame for document: ${doc.name}")
-
-    // Preprocess pipe syntax (|...|) → getSelection("...") before compilation
-    script = SelectionPreprocessor.preprocessScript(script)
-
-    def context = XGroovyFactory.cInstance.getGroovyContext(frame)
-    def scriptClass = XGroovyFactory.cInstance.compileScript(context, script)
-    def scriptInstance = scriptClass.getDeclaredConstructor().newInstance()
-    registerDocsApi(context, doc)
-    context.createBindingOn(scriptInstance)
-
-    def result = frame.perform("Eval", "Eval", {
-        return scriptInstance.run()
-    })
-    return result
-}
-
-def evalUnsafe(String script) {
-    def shell = new groovy.lang.GroovyShell(Thread.currentThread().contextClassLoader)
-    shell.setVariable("quantrix", QModelDocumentApplication.cFactory.getInstance())
-    return shell.evaluate(script)
-}
-
-def serialiseResult(Object result) {
-    if (result == null) return null
-    if (result instanceof Number || result instanceof Boolean || result instanceof String) {
-        return result
-    }
-    if (result instanceof Map || result instanceof List) {
-        return result
-    }
-    return result.toString()
-}
-
-// ── Request handler ─────────────────────────────────────────────────
-
-def handleRequest(HttpExchange ex) {
-    def path = ex.requestURI.path
-    def method = ex.requestMethod.toUpperCase()
-
-    // Block browser cross-origin requests. Browsers always send an Origin
-    // header on cross-origin requests; CLI tools (curl, Python) never do.
-    // This prevents malicious websites from reaching the server via fetch().
-    def origin = ex.requestHeaders.getFirst("Origin")
-    if (origin != null) {
-        sendError(ex, 403, "forbidden", "Cross-origin requests are not allowed")
-        return
-    }
-
-    // Require bearer token authentication
-    if (authToken == null) {
-        sendError(ex, 401, "unauthorized", "Server not ready")
-        return
-    }
-    def authHeader = ex.requestHeaders.getFirst("Authorization")
-    if (authHeader != "Bearer ${authToken}") {
-        sendError(ex, 401, "unauthorized", "Invalid or missing auth token")
-        return
-    }
-
-    try {
-        // ── Static routes ───────────────────────────────────────────
-
-        if (path == "/status" && method == "GET") {
-            def models = listModels()
-            sendJson(ex, 200, [
-                status: "ok",
-                port: serverPort,
-                models: models,
-                modelCount: models.size(),
-            ])
-            return
-        }
-
-        if (path == "/models" && method == "GET") {
-            sendJson(ex, 200, listModels())
-            return
-        }
-
-        if (path == "/system/script-unsafe" && method == "POST") {
-            handleUnsafeScript(ex)
-            return
-        }
-
-        if (path == "/loader/plugins" && method == "GET") {
-            handleListPlugins(ex)
-            return
-        }
-
-        if (path == "/loader/reload" && method == "POST") {
-            handleReloadAll(ex)
-            return
-        }
-
-        // ── Parameterised routes ────────────────────────────────────
-
-        def m = MODELS_SCRIPT.matcher(path)
-        if (m.matches() && method == "POST") {
-            handleModelScript(ex, URLDecoder.decode(m.group(1), "UTF-8"))
-            return
-        }
-
-        m = LOADER_PLUGIN_RELOAD.matcher(path)
-        if (m.matches() && method == "POST") {
-            handlePluginReload(ex, URLDecoder.decode(m.group(1), "UTF-8"))
-            return
-        }
-
-        sendError(ex, 404, "not_found", "Unknown endpoint: ${method} ${path}")
-
-    } catch (Exception e) {
-        println "[QuantrixServer] ERROR ${method} ${path}: ${e.message}"
-        e.printStackTrace(System.err)
-        try {
-            sendError(ex, 500, "internal_error", e.message ?: "Unknown error")
-        } catch (Exception e2) {
-            System.err.println("[QuantrixServer] Failed to send error response: ${e2.message}")
-        }
-    }
-}
-
-// ── Endpoint handlers ───────────────────────────────────────────────
-
-def handleModelScript(HttpExchange ex, String modelId) {
-    def script = extractScript(ex)
-    if (!script) {
-        sendError(ex, 400, "empty_script", "Request body must contain a Groovy script")
-        return
-    }
-
-    def doc = resolveDocument(modelId)
-    if (!doc) {
-        def available = listModels().collect { it.name }
-        sendError(ex, 404, "model_not_found",
-            "Model not found: ${modelId}. Available: ${available}")
-        return
-    }
-
-    def result = null
-    def error = null
-
-    SwingUtilities.invokeAndWait {
-        try {
-            result = evalScript(doc, script)
-        } catch (Exception e) {
-            error = e
-        }
-    }
-
-    if (error) {
-        def cause = error
-        while (cause.cause && cause.cause != cause) cause = cause.cause
-        sendError(ex, 400, "script_error", cause.message ?: error.message ?: "Script error")
-        return
-    }
-
-    sendJson(ex, 200, [result: serialiseResult(result), sandboxed: true])
-}
-
-def handleUnsafeScript(HttpExchange ex) {
-    def script = extractScript(ex)
-    if (!script) {
-        sendError(ex, 400, "empty_script", "Request body must contain a Groovy script")
-        return
-    }
-
-    def result = null
-    def error = null
-
-    SwingUtilities.invokeAndWait {
-        try {
-            result = evalUnsafe(script)
-        } catch (Exception e) {
-            error = e
-        }
-    }
-
-    if (error) {
-        def cause = error
-        while (cause.cause && cause.cause != cause) cause = cause.cause
-        sendError(ex, 400, "script_error", cause.message ?: error.message ?: "Script error")
-        return
-    }
-
-    sendJson(ex, 200, [result: serialiseResult(result), sandboxed: false])
-}
-
-def handleListPlugins(HttpExchange ex) {
-    if (loader == null) {
-        sendError(ex, 503, "loader_unavailable", "Groovy loader not available")
-        return
-    }
-    sendJson(ex, 200, loader.listPlugins())
-}
-
-def handlePluginReload(HttpExchange ex, String pluginId) {
-    if (loader == null) {
-        sendError(ex, 503, "loader_unavailable", "Groovy loader not available")
-        return
-    }
-    // Check plugin exists before responding
-    def plugins = loader.listPlugins()
-    def found = plugins.any { it.id == pluginId || it.directory == pluginId }
-    if (!found) {
-        sendError(ex, 404, "plugin_not_found",
-            "Plugin not found: ${pluginId}. Use GET /loader/plugins to list.")
-        return
-    }
-    // Respond before reloading — the target plugin may be this server
-    sendJson(ex, 200, [status: "reloading", plugin: pluginId])
-    SwingUtilities.invokeLater { loader.reloadById(pluginId) }
-}
-
-def handleReloadAll(HttpExchange ex) {
-    if (loader == null) {
-        sendError(ex, 503, "loader_unavailable", "Groovy loader not available")
-        return
-    }
-    // Respond before reloading — this server will be stopped and restarted
-    sendJson(ex, 200, [status: "reloading"])
-    // Schedule reload on EDT after response is sent
-    SwingUtilities.invokeLater { loader.reloadAll() }
-}
-
-// ── Request log ─────────────────────────────────────────────────────
-
-def logRequest(String method, String path, int status, long ms) {
-    def ts = dateFormat.format(new Date())
-    def line = "${ts}  ${status}  ${String.format('%4d', ms)}ms  ${method} ${path}"
-    logLines.add(line)
-    while (logLines.size() > 500) logLines.remove(0)
-    if (logTextArea != null) {
-        SwingUtilities.invokeLater {
-            logTextArea.append(line + "\n")
-            logTextArea.caretPosition = logTextArea.document.length
-        }
-    }
-}
-
-def showLogWindow() {
-    if (logDialog != null) {
-        logDialog.toFront()
-        return
-    }
-    logDialog = new JDialog((Frame) null, "Server Log \u2014 127.0.0.1:${serverPort}", false)
-    logDialog.defaultCloseOperation = JDialog.DISPOSE_ON_CLOSE
-    logDialog.addWindowListener(new java.awt.event.WindowAdapter() {
-        void windowClosed(java.awt.event.WindowEvent e) {
-            logTextArea = null
-            logDialog = null
-        }
-    })
-
-    def panel = new JPanel(new BorderLayout(8, 8))
-    panel.border = BorderFactory.createEmptyBorder(8, 8, 8, 8)
-
-    logTextArea = new JTextArea()
-    logTextArea.editable = false
-    logTextArea.font = new Font(Font.MONOSPACED, Font.PLAIN, 12)
-    logLines.each { logTextArea.append(it + "\n") }
-    logTextArea.caretPosition = logTextArea.document.length
-
-    def scrollPane = new JScrollPane(logTextArea)
-    scrollPane.preferredSize = new Dimension(700, 400)
-    panel.add(scrollPane, BorderLayout.CENTER)
-
-    def buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0))
-    def clearBtn = new JButton("Clear")
-    clearBtn.addActionListener { logLines.clear(); logTextArea.text = "" }
-    buttons.add(clearBtn)
-    def closeBtn = new JButton("Close")
-    closeBtn.addActionListener { logDialog.dispose() }
-    buttons.add(closeBtn)
-    panel.add(buttons, BorderLayout.SOUTH)
-
-    logDialog.contentPane = panel
-    logDialog.pack()
-    logDialog.locationRelativeTo = null
-    logDialog.visible = true
-}
-
-// ── Plugin bootstrap ────────────────────────────────────────────────
-
-// Capture script-level references for the inner class.
-// The IPlugin.Adapter anonymous class can't see script methods directly,
-// so we capture closures that delegate to them.
-def _handleRequest = this.&handleRequest
-def _logRequest = this.&logRequest
-def _showLogWindow = this.&showLogWindow
-
-def requestHandler = { HttpExchange ex ->
-    def start = System.currentTimeMillis()
-    def method = ex.requestMethod
-    def path = ex.requestURI.path
-    responseStatus.set(200)
-    try {
-        _handleRequest(ex)
-        def ms = System.currentTimeMillis() - start
-        _logRequest(method, path, responseStatus.get(), ms)
-    } catch (Throwable t) {
-        def ms = System.currentTimeMillis() - start
-        _logRequest(method, path, 500, ms)
-        throw t
-    }
-} as Closure
-
-// Capture values for the inner class (anonymous classes can't see @Field directly)
-def _server = null
-def _executor = null
-def _pluginId = PLUGIN_ID
-def _serverPort = SERVER_PORT
-def _log = { msg -> println "[QuantrixServer] $msg" }
-def _script = this  // reference to the script instance for setting serverPort
-def _tokenPath = TOKEN_PATH
-
-return new IPlugin.Adapter() {
-    String getId() { _pluginId }
     String getVersion() { getClass().package?.implementationVersion ?: "dev" }
 
+    int getBoundPort() { httpServer.address.port }
+
+    // Lifecycle
+
+    @Override
     void start() {
-        // Generate auth token and write to file
         def token = UUID.randomUUID().toString()
-        def tokenFile = new File(_tokenPath)
-        tokenFile.text = token
-        Files.setPosixFilePermissions(tokenFile.toPath(),
-            PosixFilePermissions.fromString("rw-------"))
-        _script.authToken = token
-        _log "Auth token written to ${_tokenPath}"
+        writePrivateFileAtomically(authTokenPath, token)
+        authToken = token
+        log("Auth token written to ${authTokenPath}")
 
-        def addr = new InetSocketAddress(InetAddress.getLoopbackAddress(), _serverPort)
-        _server = HttpServer.create(addr, 0)
-        _executor = Executors.newFixedThreadPool(4)
-        _server.setExecutor(_executor)
+        def address = new InetSocketAddress(InetAddress.getLoopbackAddress(), listenPort)
+        httpServer = HttpServer.create(address, 0)
+        requestExecutor = Executors.newFixedThreadPool(4)
+        httpServer.executor = requestExecutor
 
-        final Closure handler = requestHandler
-        _server.createContext("/", new com.sun.net.httpserver.HttpHandler() {
+        def serverRuntime = this
+        httpServer.createContext("/", new HttpHandler() {
             void handle(HttpExchange exchange) {
-                try {
-                    handler.call(exchange)
-                } catch (Throwable t) {
-                    System.err.println("[QuantrixServer] Handler error: " + t)
-                    t.printStackTrace(System.err)
-                    try {
-                        exchange.sendResponseHeaders(500, -1)
-                        exchange.close()
-                    } catch (Exception ignored) {}
-                }
+                serverRuntime.handleLoggedRequest(exchange)
             }
         })
-        _server.start()
-        _script.serverPort = _server.address.port
-        _log "Started on http://127.0.0.1:${_script.serverPort}"
+        httpServer.start()
+        log("Started on http://127.0.0.1:${boundPort}")
+        loader?.registerMenuItem("Server/Log...", this.&showLogWindow as Runnable)
+    }
 
-        if (loader != null) {
-            loader.registerMenuItem("Server/Log...", { _showLogWindow() } as Runnable)
+    @Override
+    void stop() {
+        if (httpServer != null) {
+            httpServer.stop(1)
+            log("Server stopped.")
+        }
+        requestExecutor?.shutdown()
+        httpServer = null
+        requestExecutor = null
+        authToken = null
+        Files.deleteIfExists(authTokenPath)
+        SwingUtilities.invokeLater { logDialog?.dispose() }
+    }
+
+    // HTTP
+
+    void handleLoggedRequest(HttpExchange exchange) {
+        def startedAt = System.nanoTime()
+        int statusCode = 500
+        try {
+            statusCode = handleRequest(exchange)
+        } catch (Throwable error) {
+            log("ERROR ${exchange.requestMethod} ${exchange.requestURI.path}: ${error.message}")
+            error.printStackTrace(System.err)
+            try {
+                sendError(exchange, 500, "internal_error", error.message ?: "Unknown error")
+            } catch (Exception responseError) {
+                log("Failed to send error response: ${responseError.message}")
+            }
+        } finally {
+            exchange.close()
+            def elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt)
+            logRequest(exchange.requestMethod, exchange.requestURI.path, statusCode, elapsedMillis)
         }
     }
 
-    void stop() {
-        if (_server) {
-            _server.stop(1)
-            _log "Server stopped."
+    int handleRequest(HttpExchange exchange) {
+        if (exchange.requestHeaders.getFirst("Origin") != null) {
+            return sendError(exchange, 403, "forbidden", "Cross-origin requests are not allowed")
         }
-        if (_executor) {
-            _executor.shutdown()
+        if (authToken == null) {
+            return sendError(exchange, 401, "unauthorized", "Server not ready")
         }
-        _server = null
-        _executor = null
-        _script.authToken = null
-        new File(_tokenPath).delete()
+        if (exchange.requestHeaders.getFirst("Authorization") != "Bearer ${authToken}") {
+            return sendError(exchange, 401, "unauthorized", "Invalid or missing auth token")
+        }
+
+        def path = exchange.requestURI.rawPath
+        def method = exchange.requestMethod.toUpperCase()
+        switch ("${method} ${path}") {
+            case "GET /status":
+                def models = listModels()
+                return sendJson(exchange, 200, [
+                    status: "ok", port: boundPort, models: models, modelCount: models.size(),
+                ])
+            case "GET /models":
+                return sendJson(exchange, 200, listModels())
+            case "POST /system/script-unsafe":
+                return handleScriptRequest(exchange)
+            case "GET /loader/plugins":
+                if (loader == null) {
+                    return sendError(exchange, 503, "loader_unavailable", "Groovy loader not available")
+                }
+                return sendJson(exchange, 200, loader.listPlugins())
+            case "POST /loader/reload":
+                return handlePluginReload(exchange)
+        }
+
+        if (method == "POST") {
+            def modelRoute = MODEL_SCRIPT_ROUTE.matcher(path)
+            if (modelRoute.matches()) {
+                return handleScriptRequest(exchange, decodePathSegment(modelRoute.group(1)))
+            }
+            def reloadRoute = PLUGIN_RELOAD_ROUTE.matcher(path)
+            if (reloadRoute.matches()) {
+                return handlePluginReload(exchange, decodePathSegment(reloadRoute.group(1)))
+            }
+        }
+        return sendError(exchange, 404, "not_found", "Unknown endpoint: ${method} ${path}")
+    }
+
+    static String decodePathSegment(String segment) {
+        // URLDecoder implements form encoding; '+' is literal in a URL path.
+        URLDecoder.decode(segment.replace("+", "%2B"), "UTF-8")
+    }
+
+    static int sendJson(HttpExchange exchange, int statusCode, Object body) {
+        def bytes = JsonOutput.toJson(body).getBytes("UTF-8")
+        exchange.responseHeaders.set("Content-Type", "application/json; charset=utf-8")
+        exchange.sendResponseHeaders(statusCode, bytes.length)
+        exchange.responseBody.withCloseable { it.write(bytes) }
+        statusCode
+    }
+
+    static int sendError(HttpExchange exchange, int statusCode, String code, String message) {
+        sendJson(exchange, statusCode, [error: [code: code, message: message], status: statusCode])
+    }
+
+    static def readScriptSource(HttpExchange exchange) {
+        def contentType = exchange.requestHeaders.getFirst("Content-Type") ?: ""
+        def body = exchange.requestBody.withReader("UTF-8") { it.text }
+        if (!body?.trim()) return null
+        contentType.startsWith("application/json") ? new JsonSlurper().parseText(body).script : body
+    }
+
+    // Model discovery and script execution
+
+    def getOpenDocuments() {
+        QModelDocumentApplication.cFactory.getInstance()?.openDocuments ?: []
+    }
+
+    def findDocumentByName(String modelName) {
+        modelName ? openDocuments.find { it.name.equalsIgnoreCase(modelName) } : null
+    }
+
+    def listModels() {
+        openDocuments.collect { doc ->
+            [id: doc.name, name: doc.name, dirty: doc.dirty, readOnly: doc.readOnly]
+        }
+    }
+
+    int handleScriptRequest(HttpExchange exchange, String modelName = null) {
+        def source = readScriptSource(exchange)
+        if (!source) {
+            return sendError(exchange, 400, "empty_script", "Request body must contain a Groovy script")
+        }
+
+        boolean sandboxed = modelName != null
+        def doc = sandboxed ? findDocumentByName(modelName) : null
+        if (sandboxed && !doc) {
+            def available = listModels().collect { it.name }
+            return sendError(exchange, 404, "model_not_found",
+                "Model not found: ${modelName}. Available: ${available}")
+        }
+
+        def result
+        try {
+            SwingUtilities.invokeAndWait {
+                result = sandboxed ? evalModelScript(doc, source) : evalUnsafe(source)
+            }
+        } catch (InvocationTargetException error) {
+            def cause = error
+            while (cause.cause && cause.cause != cause) cause = cause.cause
+            return sendError(exchange, 400, "script_error", cause.message ?: error.message ?: "Script error")
+        }
+        return sendJson(exchange, 200, [result: serialiseResult(result), sandboxed: sandboxed])
+    }
+
+    def evalModelScript(QModelDocument doc, String source) {
+        def uiApp = DocumentUIApplication.runningInstance()
+        if (!uiApp) throw new RuntimeException("UI application not available")
+        def frame = uiApp.getUIForDocument(doc, false)
+        if (!frame) throw new RuntimeException("No UI frame for document: ${doc.name}")
+
+        def groovySource = SelectionPreprocessor.preprocessScript(source)
+        def context = XGroovyFactory.cInstance.getGroovyContext(frame)
+        def compiledScriptClass = XGroovyFactory.cInstance.compileScript(context, groovySource)
+        def scriptInstance = compiledScriptClass.getDeclaredConstructor().newInstance()
+        registerDocsApi(context, doc)
+        context.createBindingOn(scriptInstance)
+        frame.perform("Eval", "Eval", { scriptInstance.run() })
+    }
+
+    def evalUnsafe(String source) {
+        def shell = new GroovyShell(Thread.currentThread().contextClassLoader)
+        shell.setVariable("quantrix", QModelDocumentApplication.cFactory.getInstance())
+        shell.evaluate(source)
+    }
+
+    void registerDocsApi(context, QModelDocument doc) {
+        // Introspection is optional; its failure must not prevent script execution.
+        try {
+            context.registerVariable("api", Object, QxDocs.build(doc))
+        } catch (Throwable error) {
+            log("QxDocs init failed: ${error.class.name}: ${error.message}")
+            error.printStackTrace(System.err)
+        }
+    }
+
+    static def serialiseResult(Object result) {
+        if (result == null || result instanceof Number || result instanceof Boolean
+                || result instanceof String || result instanceof Map || result instanceof List) {
+            return result
+        }
+        result.toString()
+    }
+
+    // Plugin management
+
+    int handlePluginReload(HttpExchange exchange, String pluginId = null) {
+        if (loader == null) {
+            return sendError(exchange, 503, "loader_unavailable", "Groovy loader not available")
+        }
+        if (pluginId != null && !loader.listPlugins().any { it.id == pluginId || it.directory == pluginId }) {
+            return sendError(exchange, 404, "plugin_not_found",
+                "Plugin not found: ${pluginId}. Use GET /loader/plugins to list.")
+        }
+
+        // Finish the response before scheduling a reload that may stop this server.
+        def response = pluginId == null ? [status: "reloading"] : [status: "reloading", plugin: pluginId]
+        def statusCode = sendJson(exchange, 200, response)
+        SwingUtilities.invokeLater {
+            if (pluginId == null) loader.reloadAll()
+            else loader.reloadById(pluginId)
+        }
+        statusCode
+    }
+
+    // Request log
+
+    static void log(String message) {
+        println "[QuantrixServer] ${message}"
+    }
+
+    void logRequest(String method, String path, int statusCode, long elapsedMillis) {
+        def timestamp = LocalTime.now().format(REQUEST_TIME_FORMAT)
+        String line = "${timestamp}  ${statusCode}  ${String.format('%4d', elapsedMillis)}ms  ${method} ${path}"
+        SwingUtilities.invokeLater {
+            logLines.add(line)
+            if (logLines.size() > 500) logLines.remove(0)
+            if (logTextArea != null) {
+                logTextArea.text = logLines.join("\n")
+                logTextArea.caretPosition = logTextArea.document.length
+            }
+        }
+    }
+
+    void showLogWindow() {
+        if (logDialog != null) {
+            logDialog.toFront()
+            return
+        }
+        def title = httpServer == null ? "Server Log (stopped)" : "Server Log \u2014 127.0.0.1:${boundPort}"
+        logDialog = new JDialog((Frame) null, title, false)
+        logDialog.defaultCloseOperation = JDialog.DISPOSE_ON_CLOSE
+        def serverRuntime = this
+        logDialog.addWindowListener(new java.awt.event.WindowAdapter() {
+            void windowClosed(java.awt.event.WindowEvent event) {
+                serverRuntime.logTextArea = null
+                serverRuntime.logDialog = null
+            }
+        })
+
+        def panel = new JPanel(new BorderLayout(8, 8))
+        panel.border = BorderFactory.createEmptyBorder(8, 8, 8, 8)
+        logTextArea = new JTextArea(logLines.join("\n"))
+        logTextArea.editable = false
+        logTextArea.font = new Font(Font.MONOSPACED, Font.PLAIN, 12)
+        logTextArea.caretPosition = logTextArea.document.length
+
+        def scrollPane = new JScrollPane(logTextArea)
+        scrollPane.preferredSize = new Dimension(700, 400)
+        panel.add(scrollPane, BorderLayout.CENTER)
+
+        def buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0))
+        def clearButton = new JButton("Clear")
+        clearButton.addActionListener { logLines.clear(); logTextArea.text = "" }
+        buttons.add(clearButton)
+        def closeButton = new JButton("Close")
+        closeButton.addActionListener { logDialog.dispose() }
+        buttons.add(closeButton)
+        panel.add(buttons, BorderLayout.SOUTH)
+
+        logDialog.contentPane = panel
+        logDialog.pack()
+        logDialog.locationRelativeTo = null
+        logDialog.visible = true
+    }
+
+    static void writePrivateFileAtomically(Path path, String content) {
+        def target = path.toAbsolutePath()
+        def temp = Files.createTempFile(target.parent, "${target.fileName}-", ".tmp",
+            PosixFilePermissions.asFileAttribute(
+                PosixFilePermissions.fromString("rw-------")))
+        try {
+            Files.write(temp, content.getBytes("UTF-8"))
+            Files.move(temp, target,
+                StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+        } finally {
+            Files.deleteIfExists(temp)
+        }
     }
 }
+
+return new QuantrixServerPlugin(loader: loader)

@@ -65,6 +65,22 @@ The preprocessor (pure Java, zero dependencies) builds and tests with:
 cd groovy-server-plugin && ./build.sh
 ```
 
+The server tests use `stubs/` and download Groovy from Maven Central. No Quantrix
+installation is required. CI runs these tests too:
+
+```bash
+cd groovy-server-plugin && ./test-server.sh
+```
+
+To check against installed Quantrix classes instead, set `QX_APP`:
+
+```bash
+QX_APP="/Applications/Quantrix Modeler.app/Contents/java/app" ./test-server.sh
+```
+
+Both modes use an isolated HTTP listener and mock model operations. They do not
+connect to a running app or exercise Quantrix's sandbox and undo implementation.
+
 The loader plugin needs the Quantrix application JARs on the classpath:
 
 ```bash

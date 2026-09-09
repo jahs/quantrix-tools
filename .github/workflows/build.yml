@@ -19,9 +19,9 @@ jobs:
         with:
           distribution: temurin
           java-version: 11
-      - name: Build and test
+      - name: Build and test (using stubs)
         working-directory: groovy-server-plugin
-        run: ./build.sh
+        run: ./test-server.sh
       - name: Upload plugin JAR
         uses: actions/upload-artifact@v7
         with:
