@@ -92,7 +92,7 @@ try {
     server.listenPort = 0
     server.authTokenPath = tempDir.resolve('.server-token')
 
-    def modelNames = ['Budget', 'Plan+A', 'Plan%20A', 'Plan/A', 'Plan%A']
+    def modelNames = ['Budget', 'Plan A', 'Plan+A', 'Plan%20A', 'Plan/A', 'Plan%2FA', 'Plan%A']
     def documents = modelNames.collect { name ->
         [getName: { name }, isDirty: { false }, isReadOnly: { false }] as QModelDocument
     }

@@ -8,13 +8,14 @@ RES_DIR="$PLUGIN_DIR/src/main/resources"
 BUILD_DIR="$PLUGIN_DIR/build"
 DIST_DIR="$PLUGIN_DIR/dist"
 STUBS_DIR="$REPO_DIR/stubs"
+TEST_DIR="$PLUGIN_DIR/tests"
 VERSION=$(git describe --tags --match 'v*' 2>/dev/null | sed 's/^v//')
 VERSION=${VERSION:-0.0.0-dev}
 JAR_NAME="groovy-loader-plugin-${VERSION}.jar"
 
-QX_APP="/Applications/Quantrix Modeler.app/Contents/java/app"
+QX_APP="${QX_APP-/Applications/Quantrix Modeler.app/Contents/java/app}"
 GROOVY_VERSION="4.0.24"
-GROOVY_URL="https://repo1.maven.org/maven2/org/apache/groovy/groovy/${GROOVY_VERSION}/groovy-${GROOVY_VERSION}.jar"
+GROOVY_URL="https://repo.maven.apache.org/maven2/org/apache/groovy/groovy/${GROOVY_VERSION}/groovy-${GROOVY_VERSION}.jar"
 DEPS_DIR="$BUILD_DIR/deps"
 
 echo "=== Groovy Loader Plugin Build ==="
@@ -22,7 +23,7 @@ echo "Version: $VERSION"
 echo ""
 
 rm -rf "$BUILD_DIR" "$DIST_DIR"
-mkdir -p "$BUILD_DIR/classes" "$BUILD_DIR/stubs" "$DEPS_DIR" "$DIST_DIR"
+mkdir -p "$BUILD_DIR/classes" "$BUILD_DIR/stubs" "$BUILD_DIR/test-classes" "$DEPS_DIR" "$DIST_DIR"
 
 # Build classpath — prefer Quantrix install, fall back to stubs + Maven Groovy
 CP=""
@@ -64,6 +65,17 @@ javac \
     @"$BUILD_DIR/sources.txt"
 
 echo "Compilation successful."
+
+find "$TEST_DIR" -name '*.java' -exec printf '"%s"\n' {} \; > "$BUILD_DIR/test-sources.txt"
+javac --release 11 -cp "$BUILD_DIR/classes:$CP" \
+    -d "$BUILD_DIR/test-classes" @"$BUILD_DIR/test-sources.txt"
+if ! java -Djava.awt.headless=true \
+    -cp "$BUILD_DIR/classes:$BUILD_DIR/test-classes:$CP" \
+    net.jahs.quantrix.groovyloader.GroovyLoaderPluginTest > "$BUILD_DIR/test-results.log" 2>&1; then
+    cat "$BUILD_DIR/test-results.log" >&2
+    exit 1
+fi
+grep -E '^(PASS:|[0-9]+ loader tests passed)' "$BUILD_DIR/test-results.log"
 
 cp -r "$RES_DIR"/* "$BUILD_DIR/classes/"
 

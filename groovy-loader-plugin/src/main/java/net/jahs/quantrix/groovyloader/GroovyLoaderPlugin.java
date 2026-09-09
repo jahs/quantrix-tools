@@ -264,14 +264,28 @@ public class GroovyLoaderPlugin extends IPlugin.Adapter {
             } else {
                 loadFromDirectory(entry);
             }
-        } catch (Exception e) {
-            entry.status = "failed";
-            entry.error = e.getMessage();
-            log("Failed: " + entry.pluginName + ": " + e.getMessage());
-            e.printStackTrace();
+        } catch (Throwable failure) {
+            failPlugin(entry, failure);
         } finally {
             currentlyLoadingPlugin = null;
         }
+    }
+
+    private void failPlugin(PluginEntry entry, Throwable failure) {
+        entry.status = "failed";
+        entry.error = failure.getMessage() != null ? failure.getMessage() : failure.toString();
+        if (entry.plugin != null) {
+            try {
+                entry.plugin.stop();
+            } catch (Throwable cleanupFailure) {
+                if (cleanupFailure != failure) failure.addSuppressed(cleanupFailure);
+            }
+        }
+        entry.plugin = null;
+        removePluginMenuItems(entry.pluginName);
+        closeClassLoader(entry);
+        log("Failed: " + entry.pluginName + ": " + entry.error);
+        failure.printStackTrace();
     }
 
     private void loadFromDirectory(PluginEntry entry) throws Exception {
@@ -279,10 +293,7 @@ public class GroovyLoaderPlugin extends IPlugin.Adapter {
         File entryPoint = new File(entry.source, entryPointName);
 
         if (!entryPoint.isFile()) {
-            entry.status = "failed";
-            entry.error = "No entry point: " + entryPointName;
-            log("Skipped: " + entry.pluginName + " (no entry point)");
-            return;
+            throw new IOException("No entry point: " + entryPointName);
         }
 
         log("Loading: " + entry.pluginName + " (directory)");
@@ -379,10 +390,7 @@ public class GroovyLoaderPlugin extends IPlugin.Adapter {
             // Evaluate entry point
             JarEntry epEntry = jar.getJarEntry(entryPointName);
             if (epEntry == null) {
-                entry.status = "failed";
-                entry.error = "No entry point in JAR: " + entryPointName;
-                log("Skipped: " + entry.pluginName + " (no " + entryPointName + " in JAR)");
-                return;
+                throw new IOException("No entry point in JAR: " + entryPointName);
             }
 
             URL entryPointUrl = new URL(jarUrlBase + entryPointName);
@@ -408,8 +416,8 @@ public class GroovyLoaderPlugin extends IPlugin.Adapter {
     private void initPlugin(PluginEntry entry, Object result) throws Exception {
         if (result instanceof IPlugin) {
             IPlugin plugin = (IPlugin) result;
-            plugin.start();
             entry.plugin = plugin;
+            plugin.start();
             entry.pluginId = plugin.getId();
             entry.status = "running";
             // Read version via reflection if the plugin exposes getVersion()
@@ -418,13 +426,11 @@ public class GroovyLoaderPlugin extends IPlugin.Adapter {
             } catch (ReflectiveOperationException e) {
                 // plugin doesn't report version — that's fine
             }
-            log("Started: " + entry.pluginName + " [" + plugin.getId() + "]"
+            log("Started: " + entry.pluginName + " [" + entry.pluginId + "]"
                     + (entry.version != null ? " v" + entry.version : ""));
         } else {
-            entry.status = "failed";
-            entry.error = "Returned " + (result == null ? "null" : result.getClass().getName())
-                    + ", expected IPlugin";
-            log("Skipped: " + entry.pluginName + " (" + entry.error + ")");
+            throw new IllegalArgumentException("Returned "
+                    + (result == null ? "null" : result.getClass().getName()) + ", expected IPlugin");
         }
     }
 
@@ -444,15 +450,16 @@ public class GroovyLoaderPlugin extends IPlugin.Adapter {
 
     private void startPlugin(PluginEntry entry) {
         if (entry.plugin != null && !"running".equals(entry.status)) {
+            currentlyLoadingPlugin = entry.pluginName;
             try {
                 entry.plugin.start();
                 entry.status = "running";
                 entry.error = null;
                 log("Started: " + entry.pluginId);
-            } catch (Exception e) {
-                entry.status = "failed";
-                entry.error = "Start failed: " + e.getMessage();
-                log("Error starting " + entry.pluginId + ": " + e.getMessage());
+            } catch (Throwable failure) {
+                failPlugin(entry, failure);
+            } finally {
+                currentlyLoadingPlugin = null;
             }
         }
     }

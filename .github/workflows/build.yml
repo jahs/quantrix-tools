@@ -29,7 +29,7 @@ jobs:
           path: groovy-server-plugin/dist/quantrix-server-*.jar
 
   loader-plugin:
-    name: Loader Plugin (build)
+    name: Loader Plugin (build + test)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -39,7 +39,7 @@ jobs:
         with:
           distribution: temurin
           java-version: 11
-      - name: Build (using stubs)
+      - name: Build and test (using stubs)
         working-directory: groovy-loader-plugin
         run: ./build.sh
       - name: Upload JAR
@@ -76,6 +76,8 @@ jobs:
             found=$((found + 1))
           done
           echo "Compiled $found Python script(s)"
+      - name: Test Python clients
+        run: python -m unittest discover -s tests -v
       - name: Package each skill as .skill file
         run: |
           mkdir -p dist

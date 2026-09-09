@@ -45,7 +45,8 @@ class QxClient:
     Args:
         host: Server host (default: 127.0.0.1 or $QX_HOST)
         port: Server port (default: 8182 or $QX_PORT)
-        model: Model name. If None, auto-detected when only one model is open.
+        model: Model name (or $QX_MODEL). Otherwise auto-detected per eval
+            when only one model is open.
         token: Auth token. If None, read from $QX_TOKEN or server token file.
     """
 
@@ -108,8 +109,7 @@ class QxClient:
         if not isinstance(models, list) or len(models) == 0:
             raise QxError("no_model", "No models are open")
         if len(models) == 1:
-            self.model = models[0]["id"]
-            return self.model
+            return models[0]["id"]
         names = [m.get("name", m.get("id")) for m in models]
         raise QxError("multiple_models",
                       f"Multiple models open: {names}. Specify one with model=")

@@ -81,10 +81,20 @@ QX_APP="/Applications/Quantrix Modeler.app/Contents/java/app" ./test-server.sh
 Both modes use an isolated HTTP listener and mock model operations. They do not
 connect to a running app or exercise Quantrix's sandbox and undo implementation.
 
-The loader plugin needs the Quantrix application JARs on the classpath:
+The loader builds and tests against installed Quantrix JARs, falling back to
+`stubs/` and Maven Groovy when Quantrix is absent:
 
 ```bash
 cd groovy-loader-plugin && ./build.sh
+```
+
+Set `QX_APP` to a custom installation directory, or to an empty value to force
+stubs. Loader tests use temporary plugins and do not access a running app.
+
+Run the Python client tests from the repository root:
+
+```bash
+python3 -m unittest discover -s tests -v
 ```
 
 ## Versioning
