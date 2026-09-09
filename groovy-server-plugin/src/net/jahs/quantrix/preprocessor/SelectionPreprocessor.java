@@ -1,5 +1,8 @@
 package net.jahs.quantrix.preprocessor;
 
+import java.util.ArrayDeque;
+import java.util.Deque;
+
 /**
  * Rewrites Quantrix pipe selection syntax {@code |...|} to
  * {@code getSelection("...")} method calls.
@@ -13,7 +16,7 @@ package net.jahs.quantrix.preprocessor;
  * names within the pipe expression.
  *
  * <p>This implementation uses a forward-scanning state machine that
- * tracks the last significant token type and paren depth — the same
+ * tracks the last significant token type and block-local paren depth — the same
  * disambiguation strategy the GroovyLexer uses for {@code /} (regex vs
  * division). Specifically:
  * <ul>
@@ -24,8 +27,9 @@ package net.jahs.quantrix.preprocessor;
  *       opening brackets, start of source), {@code |} is a pipe
  *       delimiter</li>
  *   <li>Newlines reset the token context (new statement), except inside
- *       {@code ()} and {@code []} where newlines are insignificant
- *       — matching Groovy's own rule</li>
+ *       {@code ()} and {@code []} where newlines are insignificant.
+ *       Entering {@code {}} starts a fresh newline context, even inside
+ *       parentheses or brackets — matching Groovy's own rule</li>
  *   <li>Correctly skips all string literal types including GStrings,
  *       with pipe transformation inside {@code ${...}} interpolation</li>
  *   <li>Correctly skips line and block comments</li>
@@ -90,7 +94,7 @@ public class SelectionPreprocessor {
     private final StringBuilder out;
     private int pos;
     private int lastToken;  // EXPR_END, PIPE_ALLOWED, or AFTER_DOT
-    private int parenDepth; // depth of () and [] only — not {}
+    private int parenDepth; // depth of () and [] within the current {} block
 
     /**
      * Preprocess a QGroovy source string, rewriting pipe selection syntax
@@ -128,30 +132,12 @@ public class SelectionPreprocessor {
      * itself is NOT consumed.
      */
     private void processCode(int closingChar) {
-        int braceDepth = 0;
+        Deque<Integer> enclosingParenDepths = new ArrayDeque<>();
 
         while (pos < len) {
             char c = src.charAt(pos);
 
-            // Brace tracking for GString interpolation: ${...} may contain
-            // nested braces (closures, maps) that are not our closing brace.
-            if (closingChar == '}') {
-                if (c == '}' && braceDepth == 0) return;
-                if (c == '{') {
-                    braceDepth++;
-                    out.append(c);
-                    pos++;
-                    lastToken = PIPE_ALLOWED;
-                    continue;
-                }
-                if (c == '}') {
-                    braceDepth--;
-                    out.append(c);
-                    pos++;
-                    lastToken = EXPR_END;
-                    continue;
-                }
-            }
+            if (c == closingChar && enclosingParenDepths.isEmpty()) return;
 
             if (trySkipCommentOrSlashy()) continue;
             if (trySkipDollarSlashy()) { lastToken = EXPR_END; continue; }
@@ -181,8 +167,8 @@ public class SelectionPreprocessor {
             }
 
             if (c == '{') {
-                // { does NOT increment parenDepth — newlines are significant
-                // inside {} blocks (unlike () and [])
+                enclosingParenDepths.push(parenDepth);
+                parenDepth = 0;
                 out.append(c);
                 pos++;
                 lastToken = PIPE_ALLOWED;
@@ -190,6 +176,7 @@ public class SelectionPreprocessor {
             }
 
             if (c == '}') {
+                if (!enclosingParenDepths.isEmpty()) parenDepth = enclosingParenDepths.pop();
                 out.append(c);
                 pos++;
                 lastToken = EXPR_END;

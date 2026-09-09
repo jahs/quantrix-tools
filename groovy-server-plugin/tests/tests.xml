@@ -601,6 +601,175 @@ getSelection("A::B")</expected>
 | option | extra</input>
 </test>
 
+<!-- ── Closure-local newline context ── -->
+
+<test>
+<name>closure context: parenthesized closure starts a new statement</name>
+<input>[1].collect({
+    def factor = 2
+    |Revenue::Q1|.value * factor
+})</input>
+<expected>[1].collect({
+    def factor = 2
+    getSelection("Revenue::Q1").value * factor
+})</expected>
+</test>
+
+<test>
+<name>closure context: closure inside a list starts a new statement</name>
+<input>def actions = [{
+    def factor = 2
+    |Revenue::Q1|.value * factor
+}]</input>
+<expected>def actions = [{
+    def factor = 2
+    getSelection("Revenue::Q1").value * factor
+}]</expected>
+</test>
+
+<test>
+<name>closure context: nested parenthesized closures</name>
+<input>outer({
+    inner({
+        def x = 1
+        |A::B|
+    })
+    |C::D|
+})</input>
+<expected>outer({
+    inner({
+        def x = 1
+        getSelection("A::B")
+    })
+    getSelection("C::D")
+})</expected>
+</test>
+
+<test>
+<name>closure context: inner parentheses still suppress newlines</name>
+<input>consume({
+    def flags = (1
+        |2|4)
+    |A::B|.value
+})</input>
+<expected>consume({
+    def flags = (1
+        |2|4)
+    getSelection("A::B").value
+})</expected>
+</test>
+
+<test>
+<name>closure context: inner brackets still suppress newlines</name>
+<input>consume({
+    def flags = [1
+        |2|4]
+    |A::B|.value
+})</input>
+<expected>consume({
+    def flags = [1
+        |2|4]
+    getSelection("A::B").value
+})</expected>
+</test>
+
+<test>
+<name>closure context: restore outer parentheses after closing brace</name>
+<input>consume({ 1 }
+    |mask|extra)</input>
+</test>
+
+<test>
+<name>closure context: restore outer brackets after closing brace</name>
+<input>[{ 1 }
+    |mask|extra]</input>
+</test>
+
+<test>
+<name>closure context: line comment ends a statement</name>
+<input>consume({
+    def x = 1 // previous value
+    |A::B|
+})</input>
+<expected>consume({
+    def x = 1 // previous value
+    getSelection("A::B")
+})</expected>
+</test>
+
+<test>
+<name>closure context: block comment at end of line ends a statement</name>
+<input>consume({
+    def x = 1 /* previous value */
+    |A::B|
+})</input>
+<expected>consume({
+    def x = 1 /* previous value */
+    getSelection("A::B")
+})</expected>
+</test>
+
+<test>
+<name>closure context: parenthesized closure inside GString restores outer parentheses</name>
+<input>consume("${[1].collect({
+    def factor = 2
+    |Revenue::Q1|.value * factor
+})}"
+    |mask|extra)</input>
+<expected>consume("${[1].collect({
+    def factor = 2
+    getSelection("Revenue::Q1").value * factor
+})}"
+    |mask|extra)</expected>
+</test>
+
+<test>
+<name>closure context: chained bitwise OR is not a selection</name>
+<input>consume({
+    flags|mask|extra
+})</input>
+</test>
+
+<test>
+<name>closure context: escaped newline preserves chained bitwise OR</name>
+<input>consume({
+    flags \
+        |mask|extra
+})</input>
+</test>
+
+<test>
+<name>closure context: inline multiline comment preserves chained bitwise OR</name>
+<input>consume({
+    flags /* comment
+    */|mask|extra
+})</input>
+</test>
+
+<test>
+<name>closure context: slashy string after a statement preserves pipe-like text</name>
+<input>consume({
+    def n = 1
+    /prefix + |A::B|/
+})</input>
+</test>
+
+<test>
+<name>closure context: braces and pipes in strings and comments do not affect scope</name>
+<input>consume({
+    def label = "} |A::B|"
+    // } |C::D|
+    /* } |E::F| */
+    |G::H|
+})</input>
+<expected>consume({
+    def label = "} |A::B|"
+    // } |C::D|
+    /* } |E::F| */
+    getSelection("G::H")
+})</expected>
+</test>
+
 <!-- ── Real-world pipe expressions from Quantrix tutorial models ── -->
 
 <test>
