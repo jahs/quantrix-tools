@@ -32,6 +32,11 @@ python3 scripts/qx.py xml MODEL [--xpath EXPR] [--with-data]   # raw decrypted X
 
 Key `data` options: `--where Region NY CT` filters to specific items (repeatable per category); `--format json` is token-efficient; `--head 0` for unlimited rows.
 
+Grouped items use full paths in labels and filters, e.g. `--where Accounts Liabilities.Tax`.
+Exact displayed paths take precedence; bare names also work when unambiguous.
+An ambiguous name raises an error listing the matching paths. See
+`references/library-usage.md` for path quoting and Python examples.
+
 `categories` shows items by default; `--no-items` hides them for a compact overview. `xml` strips cell data by default (can be GBs); `--with-data` includes it.
 
 For Python library usage (`QxModel.load`, `to_dataframe`), see `references/library-usage.md`.

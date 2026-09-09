@@ -91,10 +91,11 @@ cd groovy-loader-plugin && ./build.sh
 Set `QX_APP` to a custom installation directory, or to an empty value to force
 stubs. Loader tests use temporary plugins and do not access a running app.
 
-Run the Python client tests from the repository root:
+Run the Python client and offline reader tests from the repository root.
+The reader tests require pandas; `uv` can provide an isolated environment:
 
 ```bash
-python3 -m unittest discover -s tests -v
+uv run --with pandas --exclude-newer "30 days" python -m unittest discover -s tests -v
 ```
 
 ## Versioning

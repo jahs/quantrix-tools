@@ -253,12 +253,30 @@ def _parse_data_selective(text: str, needed: set) -> dict:
 class QxCategory:
     name: str
     oid: str
-    items: List[str]  # leaf item names in document order
+    items: List[str]  # qualified leaf paths in document order
     groups: Optional[ET.Element] = field(default=None, repr=False)
+    _leaf_names: Optional[List[str]] = field(default=None, repr=False)
 
     @property
     def size(self) -> int:
         return len(self.items)
+
+    def item_index(self, name: str) -> int:
+        """Resolve an exact item path, or an unambiguous bare leaf name."""
+        matches = [i for i, path in enumerate(self.items) if path == name]
+        if not matches and self._leaf_names is not None:
+            matches = [i for i, leaf in enumerate(self._leaf_names) if leaf == name]
+        if len(matches) == 1:
+            return matches[0]
+        if matches:
+            raise ValueError(
+                f"Ambiguous item '{name}' in category '{self.name}'. "
+                f"Matching paths: {[self.items[i] for i in matches]}"
+            )
+        raise ValueError(
+            f"Item '{name}' not in category '{self.name}'. "
+            f"Available: {self.items[:20]}"
+        )
 
 
 @dataclass
@@ -317,7 +335,8 @@ class QxMatrix:
         Args:
             columns: Category names to place on the column axis.
                      Defaults to the spreadsheetView's column-axis.
-            where: Dict of {category_name: [item_names]} to filter/slice.
+            where: Dict of {category_name: [item_paths]} to filter/slice.
+                   Exact paths take precedence; unique bare names also work.
             head: Limit to first N rows of output.
         """
         import numpy as np
@@ -357,19 +376,9 @@ class QxMatrix:
 
         # Apply where filter: determine which indices to keep per category
         keep_indices = []
-        for i, cat in enumerate(self.categories):
+        for cat in self.categories:
             if where and cat.name in where:
-                item_names = where[cat.name]
-                indices = []
-                for item_name in item_names:
-                    if item_name not in cat.items:
-                        raise ValueError(
-                            f"Item '{item_name}' not in category "
-                            f"'{cat.name}'. "
-                            f"Available: {cat.items[:20]}"
-                        )
-                    indices.append(cat.items.index(item_name))
-                keep_indices.append(indices)
+                keep_indices.append([cat.item_index(name) for name in where[cat.name]])
             else:
                 keep_indices.append(list(range(cat.size)))
 
@@ -525,20 +534,29 @@ def _cartesian_product(lists: List[List[int]]) -> List[tuple]:
 # QxModel — top level
 # ---------------------------------------------------------------------------
 
-def _get_leaf_items(children_el: Optional[ET.Element]) -> List[str]:
-    """Recursively collect leaf item names in document order."""
+def _get_leaf_paths(
+    children_el: Optional[ET.Element], parent: Tuple[str, ...] = (),
+) -> List[Tuple[str, ...]]:
+    """Recursively collect group-qualified leaf paths in document order."""
     if children_el is None:
         return []
     leaves = []
     for child in children_el:
-        fid = child.get("factory-id", "")
-        if fid == "group":
-            leaves.extend(_get_leaf_items(child.find("children")))
-        else:
-            name_el = child.find("name")
-            if name_el is not None and name_el.text:
-                leaves.append(name_el.text)
+        name = child.findtext("name")
+        path = parent + (name,) if name else parent
+        if child.get("factory-id") == "group":
+            leaves.extend(_get_leaf_paths(child.find("children"), path))
+        elif name:
+            leaves.append(path)
     return leaves
+
+
+def _format_item_path(path: Tuple[str, ...]) -> str:
+    """Quote dots and apostrophes to distinguish literal names from hierarchy."""
+    return ".".join(
+        "'" + name.replace("'", "''") + "'" if "." in name or "'" in name else name
+        for name in path
+    )
 
 
 class QxModel:
@@ -584,9 +602,12 @@ class QxModel:
         for oid, el in cat_elements.items():
             name_el = el.find("name")
             name = name_el.text if name_el is not None else f"_cat_{oid}"
-            items = _get_leaf_items(el.find("children"))
+            paths = _get_leaf_paths(el.find("children"))
             self._categories[oid] = QxCategory(
-                name=name, oid=oid, items=items, groups=el.find("children")
+                name=name, oid=oid,
+                items=[_format_item_path(path) for path in paths],
+                groups=el.find("children"),
+                _leaf_names=[path[-1] for path in paths],
             )
 
         # Pass 3: build QxMatrix objects from <table> elements

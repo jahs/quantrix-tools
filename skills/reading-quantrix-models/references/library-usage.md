@@ -32,6 +32,33 @@ df = matrix.to_dataframe(
 - `columns` controls which categories appear as column headers vs row index
 - When `keep_data_for` was used to strip data, calling `to_dataframe()` on a stripped matrix raises `RuntimeError` with a helpful message
 
+## Grouped items
+
+`category.items`, DataFrame labels, and CLI category listings use full group paths
+in document order, such as `Assets.Tax` and `Liabilities.Tax`. Each leaf occupies
+one category position; group containers add none.
+
+```python
+balance = model.matrix("Balance")
+df = balance.to_dataframe(where={"Accounts": ["Liabilities.Tax"]})
+```
+
+Exact displayed paths take precedence, so a root-level `Tax` label selects that
+root item. Otherwise, a bare leaf name such as `Cash` works only when unique in
+the category. Ambiguous names raise `ValueError` with the matching paths rather
+than selecting the first item. `category.item_index(name)` uses the same lookup
+rules and returns the item's zero-based category index.
+
+Paths single-quote components containing literal dots or apostrophes, doubling
+embedded apostrophes. Thus `'Assets.Tax'` is one literal item name, while
+`Assets.Tax` is `Tax` inside `Assets`. Other characters, including spaces and
+leading digits, retain their spelling in these offline-reader labels. Use the
+labels from `categories` verbatim in filters:
+
+```bash
+python3 scripts/qx.py data file.model Balance --where Accounts "'Assets.Tax'"
+```
+
 ## Accessing model structure
 
 ```python
