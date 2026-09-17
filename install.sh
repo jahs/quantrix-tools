@@ -179,7 +179,7 @@ if [ -d "$HOME/.claude" ]; then
             echo "  Claude plugin install failed (see errors above)"
         fi
 
-        # Plugin's MCP server launches via `uv run --with mcp`; warn if missing
+        # Plugin's MCP server launches via `uv run --with 'mcp>=2,<3'`; warn if missing
         if ! command -v uv >/dev/null 2>&1; then
             UV_MISSING=1
         fi

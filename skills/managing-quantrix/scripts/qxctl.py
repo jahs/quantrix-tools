@@ -272,17 +272,17 @@ def cmd_mcp_server(args):
     Quantrix without direct localhost or filesystem access.
     """
     try:
-        from mcp.server.fastmcp import FastMCP
+        from mcp.server.mcpserver import MCPServer
     except ImportError:
         print(
-            "Error: mcp package not installed. "
-            "Run via: uv run --with mcp qxctl.py mcp-server",
+            "Error: mcp v2 package not installed. "
+            "Run via: uv run --with 'mcp>=2,<3' qxctl.py mcp-server",
             file=sys.stderr,
         )
         return False
 
     qx = _make_client(args)
-    server = FastMCP("quantrix")
+    server = MCPServer("quantrix")
 
     @server.tool()
     def status() -> dict:
@@ -340,7 +340,7 @@ def build_parser():
   qxctl eval-unsafe 'System.getProperty("user.home")'
   qxctl plugins
   qxctl reload-all
-  uv run --with mcp qxctl.py mcp-server   # MCP stdio server (used by Claude plugin)
+  uv run --with 'mcp>=2,<3' qxctl.py mcp-server   # MCP stdio server (used by Claude plugin)
 
 environment:
   QX_PORT    Server port (default: 8182)
@@ -379,7 +379,7 @@ environment:
 
     sub.add_parser("mcp-server",
                    help="Run an MCP stdio server exposing qxctl as tools "
-                        "(requires `mcp`; use `uv run --with mcp ...`)")
+                        "(requires mcp v2; use `uv run --with 'mcp>=2,<3' ...`)")
 
     return p
 

@@ -31,7 +31,7 @@ Restart Quantrix afterwards to pick up the JARs.
 
 ### uv (Claude plugin only)
 
-The Claude plugin's MCP server launches via [`uv`](https://astral.sh/uv), which auto-fetches Python and the `mcp` package on first run:
+The Claude plugin's MCP server launches via [`uv`](https://astral.sh/uv), which auto-fetches Python and the `mcp` v2 package on first run:
 
 ```bash
 # macOS / Linux
